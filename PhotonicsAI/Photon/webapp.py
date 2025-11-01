@@ -42,12 +42,58 @@ from PhotonicsAI.Photon.drc.drc import run_drc
 # CONFIGURATION
 # =============================================================================
 
+# Available LLM models
+LLM_MODELS = {
+    "智谱 AI 模型": [
+        "glm-4",             # GLM-4 最新版
+        "chatglm_turbo",     # ChatGLM Turbo（更快）
+        "chatglm_pro",       # ChatGLM Pro
+        "chatglm_std",       # ChatGLM 标准版
+    ],
+    "OpenAI 模型": [
+        "gpt-4o",           # GPT-4
+        "o1",               # 推理优化版
+        "o3-mini",          # 快速版
+    ],
+    "Anthropic 模型": [
+        "claude-3-7-sonnet-20250219",  # Claude Sonnet
+        "claude-opus-4-20250514",      # Claude Opus 4.0
+    ],
+    "Google 模型": [
+        "gemini-2.5-pro",               # Gemini Pro 2.5
+        "gemini-1.5-pro",               # Gemini Pro 1.5
+        "gemini-1.5-flash",             # Gemini Flash（快速）
+        "gemini-2.0-flash",             # Gemini Flash 2.0
+    ],
+}
+
 # LLM model configurations for different workflow steps
-entity_extraction_model = "o1"
-component_selection_model = "o1"
-component_specification_model = "o1"
-schematic_model = "o1"
-layout_model = "o1"
+# 从侧边栏选择的模型
+def get_selected_model():
+    # 创建扁平的模型列表用于选择
+    all_models = []
+    for category, models in LLM_MODELS.items():
+        all_models.extend([f"{model} ({category.split()[0]})" for model in models])
+    
+    # 在侧边栏添加模型选择器
+    with st.sidebar:
+        st.markdown("## 🤖 LLM 模型选择")
+        selected = st.selectbox(
+            "选择要使用的 AI 模型",
+            all_models,
+            index=all_models.index("glm-4 (智谱)") if "glm-4 (智谱)" in all_models else 0,
+            help="选择用于所有步骤的 LLM 模型。不同模型可能需要不同的 API Key，请确保已在 .env 中配置。"
+        )
+        # 从选择中提取实际的模型名（去掉分类标识）
+        return selected.split(" (")[0]
+
+# 所有步骤默认使用相同的模型
+selected_model = "glm-4"  # 默认值，会被 get_selected_model() 更新
+entity_extraction_model = selected_model
+component_selection_model = selected_model
+component_specification_model = selected_model
+schematic_model = selected_model
+layout_model = selected_model
 
 # HTML templates for UI styling
 # Used to create consistent visual elements throughout the interface
@@ -974,6 +1020,40 @@ st.markdown(
 
 # Initialize session state for persistent data across app reruns
 session = st.session_state
+
+# 在session中存储并更新模型选择
+if 'selected_model' not in session:
+    session.selected_model = "glm-4"
+if 'model_initialized' not in session:
+    session.model_initialized = False
+
+# 更新模型选择（仅在未初始化时或通过UI更改时更新）
+if not session.model_initialized:
+    all_models = []
+    for category, models in LLM_MODELS.items():
+        all_models.extend([f"{model} ({category.split()[0]})" for model in models])
+    
+    # 在侧边栏添加模型选择器
+    with st.sidebar:
+        st.markdown("## 🤖 LLM 模型选择")
+        selected = st.selectbox(
+            "选择要使用的 AI 模型",
+            all_models,
+            index=all_models.index("glm-4 (智谱)") if "glm-4 (智谱)" in all_models else 0,
+            help="选择用于所有步骤的 LLM 模型。不同模型可能需要不同的 API Key，请确保已在 .env 中配置。"
+        )
+        # 从选择中提取实际的模型名（去掉分类标识）
+        session.selected_model = selected.split(" (")[0]
+        session.model_initialized = True
+
+# 更新所有步骤使用的模型
+selected_model = session.selected_model
+entity_extraction_model = selected_model
+component_selection_model = selected_model
+component_specification_model = selected_model
+schematic_model = selected_model
+layout_model = selected_model
+
 # if 'project_data' not in session:
 #     session.project_data = {}
 # sdata = session.project_data

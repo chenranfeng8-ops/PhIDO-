@@ -32,6 +32,8 @@ class Path:
 class Config(BaseSettings):
     model_config = SettingsConfigDict(env_file=dotenv_path, extra="ignore")
     openai_api_key: str = ""
+    # 智谱AI（Zhipu/智谱）的 API Key
+    zhipu_api_key: str = ""
 
 
 PATH = Path()

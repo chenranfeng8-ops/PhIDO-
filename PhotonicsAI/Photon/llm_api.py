@@ -11,9 +11,9 @@ import google.generativeai as genai
 import tiktoken
 import yaml
 from dotenv import load_dotenv
-from openai import OpenAI, RateLimitError
 from pydantic import BaseModel
 from deepseek_tokenizer import ds_token
+from zhipuai import ZhipuAI # 智谱AI SDK
 
 # Local imports
 from PhotonicsAI.config import CONF, PATH
@@ -493,7 +493,7 @@ def call_nvidia(prompt, sys_prompt="", model="nvidia/llama-3.1-nemotron-ultra-25
     """
     prompt = truncate_prompt(prompt)
 
-    client = OpenAI(base_url='https://integrate.api.nvidia.com/v1', api_key=os.getenv("NVIDIA_API_KEY"))
+    client = ZhipuAI(base_url='https://integrate.api.nvidia.com/v1', api_key=os.getenv("NVIDIA_API_KEY"))
     response = client.chat.completions.create(
         model=model,
         temperature=0.2,
@@ -543,26 +543,53 @@ def call_nvidia(prompt, sys_prompt="", model="nvidia/llama-3.1-nemotron-ultra-25
     else:
         return [splice(r.message.content) for r in response.choices]
 
-def call_openai(prompt, sys_prompt="", model="gpt-4o", n_completion=1):
-    """Calling openai API.
+def call_zhipu(prompt, sys_prompt="", model="glm-4", n_completion=1):
+    """调用智谱AI API.
 
     Args:
-        prompt: The prompt to send to the model.
-        sys_prompt: The system prompt to send to the model.
-        model: The model to use for the completion.
+        prompt: 发送给模型的提示文本
+        sys_prompt: 系统提示文本
+        model: 使用的模型名称，默认glm-4
+        n_completion: 生成结果的数量
     """
     prompt = truncate_prompt(prompt)
 
-    client = OpenAI(api_key=CONF.openai_api_key or os.getenv("OPENAI_API_KEY"))
-    response = client.chat.completions.create(
-        model=model,
-        temperature=0.1,
-        n=n_completion,
-        messages=[
-            {"role": "system", "content": sys_prompt},
-            {"role": "user", "content": prompt},
-        ],
-    )
+    # 设置API密钥
+    ZhipuAI.api_key = CONF.zhipu_api_key or os.getenv("ZHIPU_API_KEY")
+    
+    # 构建消息列表
+    messages = []
+    if sys_prompt:
+        messages.append({"role": "system", "content": sys_prompt})
+    messages.append({"role": "user", "content": prompt})
+    
+    # 调用API
+    try:
+        response = ZhipuAI.model_api.invoke(
+            model=model,
+            temperature=0.1,
+            top_p=0.7,
+            messages=messages,
+            n=n_completion
+        )
+        
+        # 处理Token统计
+        try:
+            # 智谱AI的token统计方式可能与OpenAI不同
+            input_tokens = response.get('usage', {}).get('prompt_tokens', 0)
+            output_tokens = response.get('usage', {}).get('completion_tokens', 0)
+            add_token_usage(input_tokens, output_tokens, is_cached=False)
+        except Exception as e:
+            print(f"Token tracking error in call_zhipu: {e}")
+            
+        # 返回结果
+        if n_completion == 1:
+            return response['choices'][0]['message']['content']
+        else:
+            return [choice['message']['content'] for choice in response['choices']]
+            
+    except Exception as e:
+        raise Exception(f"智谱AI API error: {str(e)}")
     
     # Track token usage
     try:
@@ -604,7 +631,7 @@ def call_openai_reasoning(prompt, model="o1-preview"):
     """
     # prompt = truncate_prompt(prompt)
 
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    client = ZhipuAI(api_key=os.getenv("OPENAI_API_KEY"))
     response = client.chat.completions.create(
         model=model,
         messages=[
@@ -644,7 +671,7 @@ def callgpt_pydantic(prompt, sys_prompt, pydantic_model):
         sys_prompt: The system prompt to send to the model.
         pydantic_model: The pydantic model to use for the completion.
     """
-    client = OpenAI()
+    client = ZhipuAI()
 
     completion = client.beta.chat.completions.parse(
         model="gpt-4o-2024-08-06",
@@ -670,7 +697,7 @@ def calldeepseek_pydantic(prompt, sys_prompt, pydantic_model):
         sys_prompt: The system prompt to send to the model.
         pydantic_model: The pydantic model to use for the completion.
     """
-    client = OpenAI(base_url='https://integrate.api.nvidia.com/v1', api_key=os.getenv("DEEPSEEK_API_KEY"))
+    client = ZhipuAI(base_url='https://integrate.api.nvidia.com/v1', api_key=os.getenv("DEEPSEEK_API_KEY"))
 
     completion = client.beta.chat.completions.parse(
         model="deepseek-ai/deepseek-r1",
@@ -767,7 +794,7 @@ def call_deepseek(prompt, sys_prompt="", model="deepseek-reasoner", n_completion
     """
     prompt = truncate_prompt(prompt)
 
-    client = OpenAI(base_url='https://api.deepseek.com/v1', api_key=os.getenv("DEEPSEEK_API_KEY"))
+    client = ZhipuAI(base_url='https://api.deepseek.com/v1', api_key=os.getenv("DEEPSEEK_API_KEY"))
     response = client.chat.completions.create(
         model=model,
         temperature=0.6,
@@ -862,8 +889,11 @@ def call_llm(prompt, sys_prompt,llm_api_selection="nvidia/nemotron-4-340b-instru
         sys_prompt: The system prompt to send to the model.
         llm_api_selection: The API to use for the completion.
     """
-    if llm_api_selection[:4] == "gpt-":
-        return call_openai(prompt, sys_prompt, llm_api_selection)
+    # Route to Zhipu (智谱) if the selection indicates a GLM/ChatGLM/Zhipu model
+    # Accept common prefixes: glm-, glm, chatglm, chatglm_turbo, zhipu
+    llm_sel_lower = llm_api_selection.lower()
+    if llm_sel_lower.startswith("gpt-") or llm_sel_lower.startswith("glm") or llm_sel_lower.startswith("chatglm") or llm_sel_lower.startswith("zhipu"):
+        return call_zhipu(prompt, sys_prompt, llm_api_selection)
     if llm_api_selection[:4] == "nvid":
         print("NVIDIA")
         return call_nvidia(prompt,sys_prompt, llm_api_selection)
