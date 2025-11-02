@@ -1,3 +1,26 @@
+# 环境与依赖安装
+
+建议使用 Python 3.12 虚拟环境（如 venv 或 conda），并安装仓库内 requirements.txt 所列依赖。
+
+推荐步骤：
+
+```bash
+# 创建并激活虚拟环境（如 myvenv）
+python3 -m venv ~/myvenv
+source ~/myvenv/bin/activate
+
+# 升级 pip 并安装依赖
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+如需开发/调试 Streamlit Web 应用，可用如下命令启动：
+
+```bash
+python -m streamlit run PhotonicsAI/Photon/webapp.py --server.address 127.0.0.1 --server.port 8501
+```
+
+如遇依赖冲突或导入错误，请确保 requirements.txt 与 pyproject.toml 的 gdsfactory/kfactory 版本一致（推荐 gdsfactory==8.18.1, kfactory==0.21.7）。
 # PhIDO: AI-Powered Photonic Circuit Designer
 
 PhIDO (Photonics Intelligent Design and Optimization) is an intelligent web application that automates the design of photonic integrated circuits using Large Language Models (LLMs). The application provides both automatic guided workflows and step-by-step execution modes for circuit design, from specification to layout generation and Design Rule Checking (DRC).
