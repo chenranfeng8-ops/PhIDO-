@@ -1280,6 +1280,12 @@ def get_next_log_filename(
     # Convert directory to a Path object
     dir_path = Path(directory)
 
+    # Ensure directory exists
+    try:
+        dir_path.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+
     # Get the current date and time in the desired format
     current_time = datetime.now().strftime("d%Y%m%d_t%H%M%S")
 
@@ -1322,6 +1328,12 @@ def logger():
     session_data.pop(
         "p400_gdsfig", None
     )  # remove gdsfig, it's about 5 MB in size, not sure why
+
+    # Make sure parent directory exists before writing
+    try:
+        Path(session.log_filename).parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
 
     with open(session.log_filename, "wb") as file:
         pickle.dump(session_data, file)
@@ -2278,21 +2290,19 @@ elif not session.step_by_step_mode and session.p100 and (session.current_message
                 '<div style="text-align: right; font-size: 18px; font-family: monospace;">Component Selection</div>',
                 unsafe_allow_html=True,
             )
+            # Always create columns for consistent layout
+            st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
+            col3, col4 = st.columns(2)
 
-            # Display component and template search results
-            if session.p200_componenets_search_r:
-                st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
-                col3, col4 = st.columns(2)
-                with col3:
-                    st.markdown(
-                        html_banner.format(content="🛠️ build a new circuit"),
-                        unsafe_allow_html=True,
-                    )
-                    st.markdown(
-                        "<div style='height: 20px;'></div>", unsafe_allow_html=True
-                    )
-                    
-                    # Display component search results
+            # Display component search results (left)
+            with col3:
+                st.markdown(
+                    html_banner.format(content="🛠️ build a new circuit"),
+                    unsafe_allow_html=True,
+                )
+                st.markdown("<div style='height: 20px;'></div>", unsafe_allow_html=True)
+
+                if session.p200_componenets_search_r:
                     for i, search_result in enumerate(session.p200_componenets_search_r):
                         with st.container(border=True):
                             st.write(f"**{session.p200_pretemplate['components_list'][i]}**")
@@ -2309,25 +2319,25 @@ elif not session.step_by_step_mode and session.p100 and (session.current_message
                                 else:
                                     option = f"{name} :grey[/{score}/]"
                                 options.append(option)
-                            
-                            selected = st.radio(
-                                f"Component {i+1} options:", 
-                                options, 
+
+                            st.radio(
+                                f"Component {i+1} options:",
+                                options,
                                 key=f"auto_component_{i}",
-                                label_visibility="collapsed"
+                                label_visibility="collapsed",
                             )
-                
-            if session.p200_retreived_templates:
-                with col4:
+                else:
+                    st.info("未找到组件候选项。可点击右侧模板或使用下方自动选择/跳过。")
+
+            # Display template search results (right)
+            with col4:
+                if session.p200_retreived_templates:
                     st.markdown(
                         html_banner.format(content="🧩 use a template"),
                         unsafe_allow_html=True,
                     )
-                    st.markdown(
-                        "<div style='height: 20px;'></div>", unsafe_allow_html=True
-                    )
-                        
-                    # Display template search results
+                    st.markdown("<div style='height: 20px;'></div>", unsafe_allow_html=True)
+
                     for i, item in enumerate(session.p200_retreived_templates):
                         with st.container(border=True):
                             t = item[1]
@@ -2340,19 +2350,33 @@ elif not session.step_by_step_mode and session.p100 and (session.current_message
                                 session.component_search_complete = True
                                 st.success(f"Selected template: {id_}")
                                 st.rerun()
-                
-                # Add submit button for component selection
+                else:
+                    st.markdown(html_small.format(content="无模板匹配结果。"), unsafe_allow_html=True)
+
+            # Action buttons (always visible)
+            st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+            a1, a2, a3 = st.columns([1,1,1])
+            with a1:
                 if st.button("Submit Component Selection", key="auto_submit_components"):
-                    # Get selected components from radio buttons
                     selected_components = []
-                    for i in range(len(session.p200_componenets_search_r)):
-                        selected_key = f"auto_component_{i}"
-                        if selected_key in session:
-                            selected = session[selected_key]
-                            # Extract component name from the selected option
+                    if session.p200_componenets_search_r:
+                        for i in range(len(session.p200_componenets_search_r)):
+                            selected_key = f"auto_component_{i}"
+                            # If user didn't touch the radio, try to pick the top option
+                            selected = session.get(selected_key)
+                            if not selected:
+                                # default to best match (prefer exact)
+                                sr = session.p200_componenets_search_r[i]
+                                best_idx = 0
+                                for idx, sc in enumerate(sr.match_scores):
+                                    if sc == "exact":
+                                        best_idx = idx
+                                        break
+                                name = list_of_cnames[sr.match_list[best_idx]]
+                                selected = f"{name} :green[/auto/]"
                             component_name = selected.split(" :")[0]
                             selected_components.append(component_name)
-                    
+
                     if selected_components:
                         session.p200_selected_components = selected_components
                         session.components_selected = True
@@ -2360,9 +2384,28 @@ elif not session.step_by_step_mode and session.p100 and (session.current_message
                         st.success("Components selected!")
                         st.rerun()
                     else:
-                        st.error("Please select components first")
-                
-                # Add reset button
+                        st.error("没有可提交的组件，请先选择或使用自动选择。")
+            with a2:
+                if st.button("Auto-select Best Matches", key="auto_autoselect"):
+                    selected_components = []
+                    if session.p200_componenets_search_r:
+                        for sr in session.p200_componenets_search_r:
+                            # pick exact if exists else first
+                            pick = 0
+                            for idx, sc in enumerate(sr.match_scores):
+                                if sc == "exact":
+                                    pick = idx
+                                    break
+                            selected_components.append(list_of_cnames[sr.match_list[pick]])
+                    if selected_components:
+                        session.p200_selected_components = selected_components
+                        session.components_selected = True
+                        session.component_search_complete = True
+                        st.success("Auto-selected best matches")
+                        st.rerun()
+                    else:
+                        st.error("没有候选组件可自动选择。")
+            with a3:
                 if st.button("Reset Workflow", key="auto_reset"):
                     session.entity_extraction_complete = False
                     session.component_search_complete = False

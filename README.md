@@ -116,7 +116,9 @@ DEEPSEEK_API_KEY='your-deepseek-api-key'
 NVIDIA_API_KEY='your-nvidia-nim-api-key'
 
 # Required for 智谱 (Zhipu) models
+# Prefer ZHIPU_API_KEY; ZHIPUAI_API_KEY is also accepted for compatibility
 ZHIPU_API_KEY='your-zhipu-api-key'
+# ZHIPUAI_API_KEY='your-zhipu-api-key'
 ```
 
 ## 🤖 Supported LLM Models
@@ -153,7 +155,7 @@ PhIDO supports multiple LLM providers through the `llm_api.py` module, LLM selec
 ### 智谱 (Zhipu / GLM) Models
 - **glm-4** - 最新的 GLM-4 文本/对话模型，适用于一般生成与推理任务 `glm-4`
 - **chatglm_turbo** - 更快的对话模型，延迟更低 `chatglm_turbo`
-- **Environment Variable**: `ZHIPU_API_KEY`
+- **Environment Variable**: `ZHIPU_API_KEY` (兼容 `ZHIPUAI_API_KEY`)
 
 **Note that** `OPENAI_API_KEY` **must be set in addition to any other model api key as PhIDO uses GPT models for formatting entity extraction results via pydantic.**
 Other models not listed above but offered by API providers above may also work but have not been tested. 

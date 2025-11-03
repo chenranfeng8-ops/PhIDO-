@@ -38,4 +38,5 @@ class Config(BaseSettings):
 
 PATH = Path()
 PATH.build.mkdir(parents=True, exist_ok=True)
+PATH.logs.mkdir(parents=True, exist_ok=True)
 CONF = Config()

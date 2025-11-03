@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel
 from deepseek_tokenizer import ds_token
 from zhipuai import ZhipuAI # 智谱AI SDK
+from openai import OpenAI
 
 # Local imports
 from PhotonicsAI.config import CONF, PATH
@@ -544,50 +545,104 @@ def call_nvidia(prompt, sys_prompt="", model="nvidia/llama-3.1-nemotron-ultra-25
         return [splice(r.message.content) for r in response.choices]
 
 def call_zhipu(prompt, sys_prompt="", model="glm-4", n_completion=1):
-    """调用智谱AI API.
+    """调用智谱AI（Zhipu）SDK，统一用新版 SDK 客户端调用方式。
 
     Args:
         prompt: 发送给模型的提示文本
         sys_prompt: 系统提示文本
-        model: 使用的模型名称，默认glm-4
+        model: 使用的模型名称，默认 glm-4
         n_completion: 生成结果的数量
     """
     prompt = truncate_prompt(prompt)
 
-    # 设置API密钥
-    ZhipuAI.api_key = CONF.zhipu_api_key or os.getenv("ZHIPU_API_KEY")
-    
+    # 兼容多种来源：优先 pydantic 配置，其次 .env 环境变量
+    api_key = (
+        CONF.zhipu_api_key
+        or os.getenv("ZHIPU_API_KEY")
+        or os.getenv("ZHIPUAI_API_KEY")  # 兼容官方常见变量名
+    )
+    if not api_key:
+        raise Exception(
+            "未找到智谱 API Key。请在 .env 中设置 ZHIPU_API_KEY（或 ZHIPUAI_API_KEY），"
+            "或在 PhotonicsAI/config.py 的 zhipu_api_key 字段中配置。"
+        )
+
+    # 显式实例化客户端（新版 SDK 推荐方式）；顺带设置兼容环境变量
+    os.environ.setdefault("ZHIPUAI_API_KEY", api_key)
+    client = ZhipuAI(api_key=api_key)
+
     # 构建消息列表
     messages = []
     if sys_prompt:
         messages.append({"role": "system", "content": sys_prompt})
     messages.append({"role": "user", "content": prompt})
-    
-    # 调用API
+
+    # 调用 API（OpenAI 兼容接口）
     try:
-        response = ZhipuAI.model_api.invoke(
-            model=model,
-            temperature=0.1,
-            top_p=0.7,
-            messages=messages,
-            n=n_completion
-        )
-        
-        # 处理Token统计
+        # zhipuai SDK 的 chat.completions.create 当前不支持 n 参数
+        # 如需多次补全，循环调用聚合结果
+        if n_completion == 1:
+            response = client.chat.completions.create(
+                model=model,
+                temperature=0.1,
+                top_p=0.7,
+                messages=messages,
+                stream=False,
+            )
+        else:
+            responses = []
+            for _ in range(n_completion):
+                r = client.chat.completions.create(
+                    model=model,
+                    temperature=0.1,
+                    top_p=0.7,
+                    messages=messages,
+                    stream=False,
+                )
+                responses.append(r)
+            # 构造一个兼容下游处理的聚合对象（仅用到 .choices/.usage）
+            class _Agg:
+                def __init__(self, rs):
+                    self.choices = []
+                    self.usage = None
+                    for rr in rs:
+                        self.choices.extend(rr.choices)
+                    # 取第一条的 usage 以供统计；统计不精确时会走兜底
+                    if rs and hasattr(rs[0], 'usage'):
+                        self.usage = rs[0].usage
+            response = _Agg(responses)
+
+        # 处理 Token 统计
         try:
-            # 智谱AI的token统计方式可能与OpenAI不同
-            input_tokens = response.get('usage', {}).get('prompt_tokens', 0)
-            output_tokens = response.get('usage', {}).get('completion_tokens', 0)
+            input_tokens = (
+                response.usage.prompt_tokens
+                if hasattr(response, "usage") and hasattr(response.usage, "prompt_tokens")
+                else 0
+            )
+            output_tokens = (
+                response.usage.completion_tokens
+                if hasattr(response, "usage") and hasattr(response.usage, "completion_tokens")
+                else 0
+            )
+            if input_tokens == 0 or output_tokens == 0:
+                # 兜底估算
+                input_tokens = input_tokens or len(tokenizer.encode(prompt + sys_prompt))
+                if n_completion == 1:
+                    output_tokens = output_tokens or len(tokenizer.encode(response.choices[0].message.content))
+                else:
+                    output_tokens = output_tokens or sum(
+                        len(tokenizer.encode(choice.message.content)) for choice in response.choices
+                    )
             add_token_usage(input_tokens, output_tokens, is_cached=False)
         except Exception as e:
             print(f"Token tracking error in call_zhipu: {e}")
-            
+
         # 返回结果
         if n_completion == 1:
-            return response['choices'][0]['message']['content']
+            return response.choices[0].message.content
         else:
-            return [choice['message']['content'] for choice in response['choices']]
-            
+            return [choice.message.content for choice in response.choices]
+
     except Exception as e:
         raise Exception(f"智谱AI API error: {str(e)}")
     
@@ -630,8 +685,10 @@ def call_openai_reasoning(prompt, model="o1-preview"):
         model: The model to use for the completion.
     """
     # prompt = truncate_prompt(prompt)
-
-    client = ZhipuAI(api_key=os.getenv("OPENAI_API_KEY"))
+    api_key = (CONF.openai_api_key or os.getenv("OPENAI_API_KEY"))
+    if not api_key:
+        raise Exception("未找到 OpenAI API Key。请在 .env 中设置 OPENAI_API_KEY，或在 PhotonicsAI/config.py 的 openai_api_key 配置。")
+    client = OpenAI(api_key=api_key)
     response = client.chat.completions.create(
         model=model,
         messages=[
@@ -671,23 +728,82 @@ def callgpt_pydantic(prompt, sys_prompt, pydantic_model):
         sys_prompt: The system prompt to send to the model.
         pydantic_model: The pydantic model to use for the completion.
     """
-    client = ZhipuAI()
-
-    completion = client.beta.chat.completions.parse(
-        model="gpt-4o-2024-08-06",
-        messages=[
-            {"role": "system", "content": sys_prompt},
-            {"role": "user", "content": prompt},
-        ],
-        response_format=pydantic_model,
-    )
-
-    message = completion.choices[0].message
-    if message.parsed:
-        return message.parsed
+    # 优先使用 OpenAI 的结构化解析；无 OPENAI_KEY 时回退到智谱严格 JSON
+    api_key = (CONF.openai_api_key or os.getenv("OPENAI_API_KEY"))
+    if api_key:
+        client = OpenAI(api_key=api_key)
+        completion = client.beta.chat.completions.parse(
+            model="gpt-4o-2024-08-06",
+            messages=[
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": prompt},
+            ],
+            response_format=pydantic_model,
+        )
+        message = completion.choices[0].message
+        if message.parsed:
+            return message.parsed
+        else:
+            print(message.refusal)
+            return message.refusal
     else:
-        print(message.refusal)
-        return message.refusal
+        # 回退方案：用智谱输出严格 JSON 并解析成 pydantic_model
+        try:
+            schema = {}
+            try:
+                schema = pydantic_model.model_json_schema()
+            except Exception:
+                pass
+            props = schema.get("properties", {}) if isinstance(schema, dict) else {}
+            required = schema.get("required", []) if isinstance(schema, dict) else []
+            fields_desc = ", ".join([
+                f"{name}:{(props.get(name,{}).get('type','string'))}{' (required)' if name in required else ''}"
+                for name in props.keys()
+            ]) or "遵循模型字段定义"
+
+            fallback_sys = (
+                f"{sys_prompt}\n\n"
+                f"请严格按照 JSON 输出，不要添加任何额外解释或代码块标记。\n"
+                f"字段与类型：{fields_desc}.\n"
+                f"确保输出能被 json.loads 直接解析。"
+            )
+            txt = call_zhipu(prompt, fallback_sys, model="glm-4", n_completion=1)
+            m = re.search(r"\{[\s\S]*\}", txt)
+            raw = m.group(0) if m else txt
+            data = json.loads(raw)
+            # Normalize fields for robustness: convert components_list items from dict->string if needed
+            try:
+                if isinstance(data, dict) and isinstance(data.get("components_list"), list):
+                    def _dict_to_component_string(d: dict) -> str:
+                        name = d.get("name") or d.get("component") or d.get("type") or "component"
+                        # ports value may appear in various spellings
+                        ports = d.get("ports") or d.get("port") or d.get("io")
+                        specs_pairs = [
+                            f"{k}: {v}"
+                            for k, v in d.items()
+                            if k not in {"name", "component", "type", "ports", "port", "io"}
+                        ]
+                        specs_str = ", ".join(specs_pairs)
+                        if specs_str and ports:
+                            return f"{name}, specifications: {{{specs_str}}}, ports: {ports}"
+                        elif specs_str:
+                            return f"{name}, specifications: {{{specs_str}}}"
+                        elif ports:
+                            return f"{name}, ports: {ports}"
+                        else:
+                            return str(name)
+
+                    if any(isinstance(it, dict) for it in data["components_list"]):
+                        data["components_list"] = [
+                            _dict_to_component_string(it) if isinstance(it, dict) else str(it)
+                            for it in data["components_list"]
+                        ]
+            except Exception:
+                # Be permissive; if normalization fails, let pydantic validation raise helpful errors
+                pass
+            return pydantic_model(**data)
+        except Exception as e:
+            raise Exception(f"Zhipu JSON 解析失败，请检查输出格式。详情: {e}")
 
 def calldeepseek_pydantic(prompt, sys_prompt, pydantic_model):
     """Calling openai with pydantic model.
@@ -1469,20 +1585,166 @@ def apply_settings(session, llm_api_selection):
     y2 = yaml.dump(session["p300_circuit_dsl"]["nodes"])
     llm_input = f"INPUT DESCRIPTION: \n{y1} \n\nNETLIST: \n{y2}"
     
-    updated_y2 = call_llm(llm_input, prompts["absorb_settings"], llm_api_selection)
-    # Pre-process the YAML: wrap unquoted 'comment' values in quotes.
-    updated_y2_fixed = re.sub(
-        r'^( *comment:\s*)(.+)$', 
-        lambda m: m.group(1) + '"' + m.group(2).strip().replace("-", "\n") + '"', 
-        updated_y2, 
-        flags=re.MULTILINE
+    # Prefer STRICT JSON output from LLM to avoid YAML pitfalls
+    strict_sys = (
+        (prompts.get("absorb_settings") if isinstance(prompts, dict) else "")
+        + "\n\n务必严格遵守以下要求：\n"
+        + "1) 只输出一个 JSON 对象（即 nodes 映射），不要任何解释、不要 Markdown 代码块围栏、不要前后缀。\n"
+        + "2) JSON 顶层是一个对象，键为节点名（如 N1、N2），值为该节点的对象（包含 component/placement/ports 等字段）。\n"
+        + "3) 不要输出 YAML、不要输出额外自然语言，确保 json.loads 能直接解析。\n"
     )
-    updated_y2 = yaml.safe_load(updated_y2)
+
+    txt = call_llm(llm_input, strict_sys, llm_api_selection)
+
+    # Try parse as pure JSON first (most strict)
+    def _extract_json_object(s: str):
+        s = (s or "").strip()
+        # Quick path
+        try:
+            return json.loads(s)
+        except Exception:
+            pass
+        # Remove code fences if present
+        if s.startswith("```"):
+            lines = s.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].startswith("```"):
+                lines = lines[:-1]
+            s = "\n".join(lines).strip()
+            try:
+                return json.loads(s)
+            except Exception:
+                pass
+        # Brace matching to extract first valid JSON object
+        start = s.find('{')
+        if start == -1:
+            return None
+        depth = 0
+        for i in range(start, len(s)):
+            ch = s[i]
+            if ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    segment = s[start:i+1]
+                    try:
+                        return json.loads(segment)
+                    except Exception:
+                        break
+        return None
+
+    updated_y2 = _extract_json_object(txt)
+    # If JSON path failed, fall back to previous YAML-based sanitization path
+    if updated_y2 is None:
+        updated_y2 = txt
+
+    # Pre-process the YAML returned by the LLM to be more lenient and quote risky values
+    # 1) Wrap unquoted 'comment' (and similar) values that may contain ':' into quotes
+    if isinstance(updated_y2, dict):
+        # Already parsed strict JSON
+        text = None
+    else:
+        text = updated_y2 if isinstance(updated_y2, str) else str(updated_y2)
+
+    # Remove markdown code fences if present
+    if text and text.strip().startswith("```"):
+        lines = [ln for ln in text.strip().splitlines()]
+        # drop first and last fence lines if present
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines)
+
+    # Specific: quote obvious narrative fields that tend to include colons
+    if text:
+        for key_name in ["comment", "comments", "description", "desc", "notes", "note", "summary"]:
+            pattern = rf'^(\s*{key_name}:\s*)(.+)$'
+            text = re.sub(
+                pattern,
+                lambda m: m.group(1) + '"' + m.group(2).strip().replace('"', '\\"') + '"'
+                if not (m.group(2).strip().startswith("'") or m.group(2).strip().startswith('"')) else m.group(0),
+                text,
+                flags=re.MULTILINE,
+            )
+
+    # Generic: if a mapping value on the same line contains ':' and is not a structured value, quote it
+    def _quote_rhs_if_needed(match: re.Match) -> str:
+        left, right = match.group(1), match.group(2).strip()
+        if not right:
+            return match.group(0)
+        # don't touch already quoted or structured values
+        if right.startswith('{') or right.startswith('[') or right.startswith('|') or right.startswith('>'):
+            return match.group(0)
+        if (right.startswith('"') and right.endswith('"')) or (right.startswith("'") and right.endswith("'")):
+            return match.group(0)
+        # if colon exists in a plain scalar, quote it
+        if ':' in right:
+            safe = right.replace('"', '\\"')
+            return f"{left}\"{safe}\""
+        return match.group(0)
+
+    if text:
+        text = re.sub(r'^(\s*[A-Za-z0-9_\-]+:\s*)(.+)$', _quote_rhs_if_needed, text, flags=re.MULTILINE)
+
+    # Now try to load sanitized YAML (first attempt)
+    if isinstance(updated_y2, dict):
+        # keep as is
+        pass
+    else:
+        try:
+            updated_y2 = yaml.safe_load(text)
+        except Exception:
+            # Fallback: convert narrative single-line fields into block scalars to avoid inline parsing issues
+            def to_block_scalar(match: re.Match) -> str:
+                indent = match.group(1)
+                key = match.group(2)
+                rhs = match.group(3).strip()
+                # strip surrounding quotes if present
+                if (rhs.startswith('"') and rhs.endswith('"')) or (rhs.startswith("'") and rhs.endswith("'")):
+                    rhs = rhs[1:-1]
+                # unescape
+                rhs = rhs.replace('\\"', '"')
+                # build block scalar with two-space indentation
+                block_lines = [f"{indent}{key}: |", f"{indent}  {rhs}"]
+                return "\n".join(block_lines)
+
+            block_pattern = re.compile(r"^(\s*)(comment|comments|description|desc|notes|note|summary):\s*(.+)$", re.MULTILINE)
+            text_block = re.sub(block_pattern, to_block_scalar, text)
+            updated_y2 = yaml.safe_load(text_block)
+        # Fallback: convert narrative single-line fields into block scalars to avoid inline parsing issues
+        def to_block_scalar(match: re.Match) -> str:
+            indent = match.group(1)
+            key = match.group(2)
+            rhs = match.group(3).strip()
+            # strip surrounding quotes if present
+            if (rhs.startswith('"') and rhs.endswith('"')) or (rhs.startswith("'") and rhs.endswith("'")):
+                rhs = rhs[1:-1]
+            # unescape
+            rhs = rhs.replace('\\"', '"')
+            # build block scalar with two-space indentation
+            block_lines = [f"{indent}{key}: |", f"{indent}  {rhs}"]
+            return "\n".join(block_lines)
+
+        block_pattern = re.compile(r"^(\s*)(comment|comments|description|desc|notes|note|summary):\s*(.+)$", re.MULTILINE)
+        text_block = re.sub(block_pattern, to_block_scalar, text)
+        updated_y2 = yaml.safe_load(text_block)
+    # Ensure result is a mapping and strip stray comment fields
+    if not isinstance(updated_y2, dict):
+        raise ValueError("apply_settings: LLM 返回的 YAML 不是映射类型，无法更新 nodes")
     if "comment" in updated_y2:
-        del updated_y2["comment"]
-    for k, v in updated_y2.items():
-        if "comment" in v:
-            del updated_y2[k]["comment"]
+        try:
+            del updated_y2["comment"]
+        except Exception:
+            pass
+    for k, v in list(updated_y2.items()):
+        if isinstance(v, dict) and "comment" in v:
+            try:
+                del updated_y2[k]["comment"]
+            except Exception:
+                pass
 
     session["p300_circuit_dsl"]["nodes"] = updated_y2
 

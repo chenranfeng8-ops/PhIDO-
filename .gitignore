@@ -1,0 +1,36 @@
+.env
+# Local virtual envs
+.venv/
+venv/
+
+# Python cache and metadata
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+
+# Build and output artifacts
+build/
+dist/
+*.egg-info/
+
+# Streamlit runtime
+streamlit.log
+streamlit.pid
+
+# App logs
+PhotonicsAI/log/
+
+# DRC outputs
+PhotonicsAI/Photon/drc/report.lydrb
+drc/
+
+# Notebooks and checkpoints
+.ipynb_checkpoints/
+
+# OS/editor
+.DS_Store
+.vscode/
+# Add other local files/folders you don't want to commit below

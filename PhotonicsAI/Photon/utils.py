@@ -5,13 +5,18 @@ import glob
 import os
 import pathlib
 import re
+from functools import lru_cache
 
+import gdsfactory as gf
+import importlib
+import inspect
 import jax
 import jax.numpy as jnp
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import pygraphviz as pgv
+import yaml
 from sax.saxtypes import Float, Model
 
 from PhotonicsAI.config import PATH
@@ -132,14 +137,67 @@ def edges_dot_to_yaml(session):
 
 
 def dsl_to_gf(circuit_dsl):
-    """Converts a circuit DSL to a GDSFactory netlist."""
-    # Create a new nodes dictionary with renamed keys
+    """Converts a circuit DSL to a GDSFactory netlist.
+
+    Also sanitizes instance settings to only include parameters accepted by the
+    target component (drop unknown kwargs to avoid runtime TypeError).
+    """
+
+    @lru_cache(maxsize=256)
+    def _allowed_settings_for(component_name: str) -> set:
+        """Return the set of valid setting keys for a given component name.
+
+        Uses gdsfactory's from_yaml + get_netlist to introspect default settings.
+        Caches results for performance.
+        """
+        try:
+            # minimal netlist to introspect settings
+            gf_netlist = {"instances": {"X": {"component": component_name}}}
+            c_tmp = gf.read.from_yaml(yaml.dump(gf_netlist))
+            d_tmp = c_tmp.get_netlist(recursive=False)
+            settings_keys = set(d_tmp["instances"]["X"].get("settings", {}).keys())
+            if settings_keys:
+                return settings_keys
+        except Exception:
+            pass
+
+        # Fallback: introspect the function signature in our DesignLibrary directly
+        try:
+            mod = importlib.import_module(
+                f"PhotonicsAI.KnowledgeBase.DesignLibrary.{component_name}"
+            )
+            func = getattr(mod, component_name)
+            sig = inspect.signature(func)
+            params = []
+            for name, p in sig.parameters.items():
+                if name in {"self"}:
+                    continue
+                # Only include named params (positional-or-keyword or keyword-only)
+                if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY):
+                    params.append(name)
+            return set(params)
+        except Exception:
+            return set()
+
+    # Create a new nodes dictionary with renamed keys and sanitized settings
     new_nodes = {}
-    for node_id, node_info in circuit_dsl["nodes"].items():
+    for node_id, node_info in circuit_dsl.get("nodes", {}).items():
+        component_name = node_info.get("component", "")
+        # Prefer params; some flows may already use settings
+        raw_settings = node_info.get("params", {}) or node_info.get("settings", {}) or {}
+
+        # Filter out unknown parameters to prevent unexpected keyword errors
+        allowed = _allowed_settings_for(component_name)
+        if allowed:
+            clean_settings = {k: v for k, v in raw_settings.items() if k in allowed}
+        else:
+            # If we couldn't introspect, pass through as-is (best effort)
+            clean_settings = raw_settings
+
         new_nodes[node_id] = {
-            "component": node_info["component"],
-            "info": node_info["properties"],  # Rename properties to info
-            "settings": node_info["params"],  # Rename params to settings
+            "component": component_name,
+            "info": node_info.get("properties", {}),  # Rename properties to info
+            "settings": clean_settings,  # Sanitized settings
         }
 
     new_routes = {}
@@ -149,11 +207,17 @@ def dsl_to_gf(circuit_dsl):
         new_routes[source] = target
 
     placements = {}
-    for node_id, node_info in circuit_dsl["nodes"].items():
-        placements[node_id] = {}
-        placements[node_id]["x"] = node_info["placement"]["x"]
-        placements[node_id]["y"] = node_info["placement"]["y"]
-        placements[node_id]["rotation"] = node_info["placement"]["rotation"]
+    for i, (node_id, node_info) in enumerate(circuit_dsl.get("nodes", {}).items()):
+        pl = node_info.get("placement", {}) if isinstance(node_info, dict) else {}
+        x = pl.get("x")
+        y = pl.get("y")
+        rot = pl.get("rotation")
+        if x is None or y is None or rot is None:
+            # Fallback to a simple linear placement to avoid KeyError and keep pipeline running
+            x = float(i * 100.0)
+            y = 0.0
+            rot = 0
+        placements[node_id] = {"x": x, "y": y, "rotation": rot}
 
     gf_netlist = {
         "instances": new_nodes,
@@ -163,7 +227,7 @@ def dsl_to_gf(circuit_dsl):
             }
         },
         "placements": placements,
-        "ports": circuit_dsl["ports"],
+        "ports": circuit_dsl.get("ports", {}),
     }
 
     return gf_netlist
@@ -171,8 +235,68 @@ def dsl_to_gf(circuit_dsl):
 
 def get_graphviz_placements(dot_string):
     """Get the node positions from a DOT graph string."""
+    # Sanitize DOT similar to dot_planarity
+    def sanitize_dot_string(s: str) -> str:
+        if not isinstance(s, str):
+            s = str(s)
+        s = s.replace("\r", "")
+        s = re.sub(r"```(?:dot)?", "", s)
+        s = re.sub(r"/\*[\s\S]*?\*/", "", s)
+        s = re.sub(r"//.*", "", s)
+        m = re.search(r"\b(digraph|graph)\b", s)
+        s2 = s[m.start():] if m else s
+        start = s2.find("{")
+        if start != -1:
+            depth = 0
+            end_index = None
+            for i, ch in enumerate(s2[start:], start=start):
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        end_index = i
+                        break
+            if end_index is not None:
+                header = s2[:start]
+                block = s2[start:end_index + 1]
+                if not re.search(r"\b(digraph|graph)\b", header):
+                    s_clean = "graph G " + block
+                else:
+                    s_clean = header + block
+            else:
+                if re.search(r"\b(digraph|graph)\b", s2[:start]):
+                    s_clean = s2 + "\n}"
+                else:
+                    s_clean = "graph G " + s2[start:] + "\n}"
+        else:
+            s_clean = f"graph G {{\n{s2}\n}}"
+        s_clean = s_clean.replace("```", "")
+        return s_clean.strip()
+
+    dot_string = sanitize_dot_string(dot_string)
+
     # Create a graph from the DOT string
-    graph = pgv.AGraph(string=dot_string)
+    try:
+        graph = pgv.AGraph(string=dot_string)
+    except Exception:
+        # Fallback: dump and try naive placement
+        try:
+            PATH.build.mkdir(parents=True, exist_ok=True)
+            with open(str(PATH.build / "invalid_dot_positions.dot"), "w", encoding="utf-8") as fh:
+                fh.write(dot_string)
+        except Exception:
+            pass
+        # naive positions: parse node ids and place on a line
+        node_ids = []
+        for line in dot_string.splitlines():
+            m = re.match(r"\s*([A-Za-z0-9_]+)\s*\[", line)
+            if m:
+                node_id = m.group(1)
+                if node_id not in node_ids:
+                    node_ids.append(node_id)
+        positions = {nid: (i * 100.0, 0.0) for i, nid in enumerate(node_ids)}
+        return positions
 
     # Set node separation (horizontal) (inches)
     graph.graph_attr["nodesep"] = ".05"
@@ -189,10 +313,26 @@ def get_graphviz_placements(dot_string):
     # Get node positions ---> THIS IS THE CENTER OF THE NODES. BUT GDSFACTORY USES THE BOTTOM LEFT CORNER.
     positions = {}
     for node in graph.nodes():
-        pos = node.attr["pos"]
-        if pos:
+        pos = node.attr.get("pos")
+        if not pos:
+            continue
+        try:
             x, y = map(float, pos.split(","))
-            positions[str(node)] = (x, y)
+        except Exception:
+            continue
+        # Primary key: actual DOT node id
+        positions[str(node)] = (x, y)
+        # Alias key: if label contains "<dsl_id>: ..."，也记录为坐标键，便于 DSL 对齐
+        label = node.attr.get("label")
+        if label:
+            m = re.search(r"([A-Za-z0-9_]+)\s*:", label)
+            if m:
+                alias = m.group(1)
+                positions.setdefault(alias, (x, y))
+    # If Graphviz produced no positions, fallback to naive
+    if not positions:
+        node_ids = [str(n) for n in graph.nodes()]
+        positions = {nid: (i * 100.0, 0.0) for i, nid in enumerate(node_ids)}
     return positions
 
 
@@ -228,21 +368,47 @@ def multiply_node_dimensions(node_dimensions, factor=0.01):
 
 
 def add_placements_to_dsl(session):
-    """Add node placements to the circuit DSL."""
+    """Add node placements to the circuit DSL.
+
+    Robust to node-name drift between DOT and DSL. Uses positions for matching DSL node ids;
+    if a DOT node label contains "<dsl_id>: ..." 该 id 也会在 positions 中作为别名键。
+    未找到坐标的节点将被跳过（保留默认/缺省），避免 KeyError。
+    """
     placements = session["p300_graphviz_node_coordinates"]
     circuit = session["p300_circuit_dsl"]
 
     # Add placements to the data
-    # GRAPHVIZ returns CENTER OF THE NODES. BUT GDSFACTORY USES THE BOTTOM LEFT CORNER: (not sure which corner but this is working: )
-    for key, value in placements.items():
-        circuit["nodes"][key]["placement"] = {}
-        circuit["nodes"][key]["placement"]["rotation"] = 0  # TODO
-        circuit["nodes"][key]["placement"]["x"] = (
-            value[0] - circuit["nodes"][key]["properties"]["dx"] / 2
-        )
-        circuit["nodes"][key]["placement"]["y"] = (
-            value[1] - 0 * circuit["nodes"][key]["properties"]["dy"] / 2
-        )
+    # GRAPHVIZ returns CENTER OF THE NODES. BUT GDSFACTORY USES THE BOTTOM LEFT CORNER
+    for node_id in list(circuit["nodes"].keys()):
+        if node_id not in placements:
+            # 尝试用大小写/别名匹配（常见 LLM 将 N1 改为 n1 或 A/B）
+            alt = None
+            if node_id.lower() in placements:
+                alt = node_id.lower()
+            elif node_id.upper() in placements:
+                alt = node_id.upper()
+            else:
+                # 最后尝试：寻找完全相同 id 的别名键（get_graphviz_placements 会把 label 中的 dsl id 也塞到键里）
+                # 如果没有就跳过该节点
+                pass
+            if alt and alt in placements:
+                pos = placements[alt]
+            else:
+                # 没有坐标可用，跳过，避免 KeyError
+                continue
+        else:
+            pos = placements[node_id]
+
+        x, y = pos
+        node = circuit["nodes"][node_id]
+        props = node.get("properties", {})
+        dx = props.get("dx", 0)
+        dy = props.get("dy", 0)
+
+        node.setdefault("placement", {})
+        node["placement"]["rotation"] = 0  # TODO
+        node["placement"]["x"] = x - dx / 2
+        node["placement"]["y"] = y - 0 * dy / 2
 
     # circuit['']['placements'] = {key: {'x': value[0]-circuit['nodes'][key]['info']['dx']/2,
     #                             'y': value[1]-0*circuit['nodes'][key]['info']['dy']/2} for key, value in placements.items()}
@@ -254,27 +420,30 @@ def add_final_ports(session):
     """Add final ports to the circuit DSL."""
 
     def find_open_ports(dot_source):
-        edges = []
         nodes_ports = {}
 
         # Parse the graph source to identify edges and node labels
-        for line in dot_source.splitlines():
-            line = line.strip()
-            if "--" in line:
-                edge = line.strip(";").split(" -- ")
-                edges.append(tuple(edge))
-            elif '[label="' in line:
-                node = line.split()[0]
-                label = re.search(r'\[label="(.*)"\]', line).group(1)
-                ports = re.findall(r"<(o\d+)>", label)
-                nodes_ports[node] = ports
-
-        # Extract connected ports
         connected_ports = set()
-        for edge in edges:
-            for endpoint in edge:
-                node, port = endpoint.split(":")
-                connected_ports.add(f"{node}:{port}")
+        for raw_line in dot_source.splitlines():
+            line = raw_line.strip()
+            # Collect node label-defined ports
+            if '[label="' in line:
+                try:
+                    node = line.split()[0]
+                    m = re.search(r'\[label="(.*)"\]', line)
+                    if not m:
+                        continue
+                    label = m.group(1)
+                    ports = re.findall(r"<(o\d+)>", label)
+                    if ports:
+                        nodes_ports[node] = ports
+                except Exception:
+                    continue
+            # Collect connected endpoints (robust to extra colons or attributes)
+            if "--" in line:
+                # Match occurrences like Node:o1 possibly followed by compass or attrs, we only take first two groups
+                for n, p in re.findall(r"(\w+):(o\d+)", line):
+                    connected_ports.add(f"{n}:{p}")
 
         # Determine open ports
         open_ports = []
@@ -285,13 +454,80 @@ def add_final_ports(session):
 
         return open_ports
 
+    def build_dot_to_dsl_map(dot_source):
+        """Build a mapping from DOT node ids to DSL node ids using labels.
+
+        If a DOT node has a label like "N1: component ...", we map DOT_id -> "N1".
+        """
+        mapping = {}
+        for raw_line in dot_source.splitlines():
+            line = raw_line.strip()
+            if not line or "[label=" not in line:
+                continue
+            try:
+                node = line.split()[0]
+                m = re.search(r'\[label="(.*)"\]', line)
+                if not m:
+                    continue
+                label = m.group(1)
+                m2 = re.search(r"([A-Za-z0-9_]+)\s*:", label)
+                if m2:
+                    dsl_id = m2.group(1)
+                    mapping[node] = dsl_id
+            except Exception:
+                continue
+        return mapping
+
     def create_port_dict(open_ports):
         port_dict = {}
         for i, open_port in enumerate(open_ports):
             port_dict[f"o{i+1}"] = open_port.replace(":", ",")
         return port_dict
 
-    open_ports_list = find_open_ports(session["p300_dot_string"])
+    dot_src = session["p300_dot_string"]
+    open_ports_list = find_open_ports(dot_src)
+
+    # Map DOT node ids in ports to DSL node ids to avoid mismatches like 'C1' vs 'N1'
+    dot_to_dsl = build_dot_to_dsl_map(dot_src)
+    dsl_nodes = set(session["p300_circuit_dsl"].get("nodes", {}).keys())
+
+    def map_node_to_dsl(node: str) -> str | None:
+        if node in dsl_nodes:
+            return node
+        if node in dot_to_dsl and dot_to_dsl[node] in dsl_nodes:
+            return dot_to_dsl[node]
+        if node.lower() in dsl_nodes:
+            return node.lower()
+        if node.upper() in dsl_nodes:
+            return node.upper()
+        return None
+
+    mapped_open_ports = []
+    for npair in open_ports_list:
+        try:
+            node, port = npair.split(":", 1)
+        except ValueError:
+            continue
+        target_node = map_node_to_dsl(node)
+        if target_node:
+            mapped_open_ports.append(f"{target_node}:{port}")
+    open_ports_list = mapped_open_ports
+
+    # Fallback: ensure at least 2 external ports for SAX circuit validation
+    if len(open_ports_list) < 2:
+        try:
+            nodes = list(session["p300_circuit_dsl"].get("nodes", {}).keys())
+            if nodes:
+                first = nodes[0]
+                last = nodes[-1] if len(nodes) > 1 else nodes[0]
+                # Prefer expose o1 of first and last nodes
+                # Avoid duplicates if only one node
+                open_ports_list = [f"{first}:o1", f"{last}:o2" if last == first else f"{last}:o1"]
+        except Exception:
+            # As a last resort, create generic o1/o2 on a synthetic node name; 
+            # but keep best effort to avoid crashing
+            open_ports_list = ["N1:o1", "N2:o1"]
+
     circuit_ports_dict = create_port_dict(open_ports_list)
 
     session["p300_circuit_dsl"]["ports"] = circuit_ports_dict
@@ -455,24 +691,87 @@ def dot_planarity(dot_string):
     Args:
         session: The Streamlit session object containing the dot string to check.
     """
-    # Remove any extraneous tokens at the start (e.g. an extra "dot" line)
-    lines = dot_string.strip().splitlines()
-    if lines and lines[0].strip() == "dot":
-        dot_string = "\n".join(lines[1:])
+    # Sanitize DOT text to avoid pygraphviz parsing errors from LLM artifacts
+    def sanitize_dot_string(s: str) -> str:
+        if not isinstance(s, str):
+            s = str(s)
+        # Normalize newlines and strip code fences
+        s = s.replace("\r", "")
+        s = re.sub(r"```(?:dot)?", "", s)
+        # Remove C/C++ style comments and // line comments
+        s = re.sub(r"/\*[\s\S]*?\*/", "", s)
+        s = re.sub(r"//.*", "", s)
+        # Trim leading noise before 'graph' or 'digraph'
+        m = re.search(r"\b(digraph|graph)\b", s)
+        s2 = s[m.start():] if m else s
+        # Extract the first balanced brace block
+        start = s2.find("{")
+        if start != -1:
+            depth = 0
+            end_index = None
+            for i, ch in enumerate(s2[start:], start=start):
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        end_index = i
+                        break
+            if end_index is not None:
+                header = s2[:start]
+                block = s2[start:end_index + 1]
+                if not re.search(r"\b(digraph|graph)\b", header):
+                    s_clean = "graph G " + block
+                else:
+                    s_clean = header + block
+            else:
+                # No matching closing brace; try to close it
+                if re.search(r"\b(digraph|graph)\b", s2[:start]):
+                    s_clean = s2 + "\n}"
+                else:
+                    s_clean = "graph G " + s2[start:] + "\n}"
+        else:
+            # No braces found; wrap contents in a minimal graph
+            s_clean = f"graph G {{\n{s2}\n}}"
+        # Final cleanup of stray backticks
+        s_clean = s_clean.replace("```", "")
+        return s_clean.strip()
+
+    dot_string = sanitize_dot_string(dot_string)
         
-    # Load the dot string
-    graph = pgv.AGraph(string=dot_string)
+    try:
+        # Load the dot string
+        graph = pgv.AGraph(string=dot_string)
 
-    # Apply a layout to the graph
-    graph.layout(prog="dot")
+        # Apply a layout to the graph
+        graph.layout(prog="dot")
 
-    # Get edge coordinates
-    edges = []
-    for edge in graph.edges():
-        points = edge.attr["pos"].split()
-        start = tuple(map(float, points[0].split(",")))
-        end = tuple(map(float, points[-1].split(",")))
-        edges.append((start, end))
+        # Get edge coordinates
+        edges = []
+        for edge in graph.edges():
+            pos = edge.attr.get("pos")
+            if not pos:
+                continue
+            points = pos.split()
+            if not points:
+                continue
+            # Fallback parsing for edge pos strings
+            try:
+                start = tuple(map(float, points[0].split(",")))
+                end = tuple(map(float, points[-1].split(",")))
+                if len(start) >= 2 and len(end) >= 2:
+                    edges.append(((start[0], start[1]), (end[0], end[1])))
+            except Exception:
+                continue
+    except Exception as e:
+        # If parsing/layout fails, dump the DOT for debugging and return False to trigger edge-fix retry
+        try:
+            PATH.build.mkdir(parents=True, exist_ok=True)
+            with open(str(PATH.build / "invalid_dot_last.dot"), "w", encoding="utf-8") as fh:
+                fh.write(dot_string)
+        except Exception:
+            pass
+        return False
 
     # Function to check if two line segments (p1, q1) and (p2, q2) intersect
     def do_intersect(p1, q1, p2, q2):
