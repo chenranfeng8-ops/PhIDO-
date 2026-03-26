@@ -2,6 +2,7 @@
 # Local virtual envs
 .venv/
 venv/
+wsl_venv/
 
 # Python cache and metadata
 __pycache__/
@@ -34,3 +35,4 @@ drc/
 .DS_Store
 .vscode/
 # Add other local files/folders you don't want to commit below
+BOOKMARKS_GUIDE.md

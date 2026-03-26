@@ -1,0 +1,681 @@
+other:
+  ports: error
+  port_variants:
+  - error
+  params:
+    layer:
+      default: WG
+      frequency: 34/97
+  sample_count: 97
+  sample_components:
+  - C
+  - L
+  - SequenceGenerator
+  - add_fiber_array_optical_south_electrical_north
+  - add_frame
+  - add_trenches
+  - add_trenches90
+  - align_wafer
+  - array
+  - awg
+  description: C geometry with ports on both ends.      based on phidl.
+termination:
+  ports: error
+  port_variants:
+  - error
+  params:
+    component:
+      default: straight
+      frequency: 1/3
+    terminator:
+      default: functools.partial(<function taper at 0x000001D24697FA60>, width2=0.1)
+      frequency: 1/3
+    length:
+      default: 50
+      frequency: 1/3
+    cross_section_input:
+      default: <function strip at 0x000001D246730AE0>
+      frequency: 1/3
+    tapered_width:
+      default: 0.2
+      frequency: 1/3
+    doping_layers:
+      default:
+      - NPP
+      frequency: 1/3
+    doping_offset:
+      default: 1.0
+      frequency: 1/3
+    separation:
+      default: 3.0
+      frequency: 1/3
+    width_tip:
+      default: 0.2
+      frequency: 1/3
+    number_of_loops:
+      default: 1
+      frequency: 1/3
+    npoints:
+      default: 1000
+      frequency: 1/3
+    cross_section:
+      default: strip
+      frequency: 1/3
+  sample_count: 3
+  sample_components:
+  - add_termination
+  - terminator
+  - terminator_spiral
+  description: Returns component with terminator on some ports.
+bend:
+  ports: error
+  port_variants:
+  - error
+  params:
+    radius:
+      default: 10.0
+      frequency: 11/19
+    angle:
+      default: 90.0
+      frequency: 7/19
+    npoints:
+      default: 99
+      frequency: 10/19
+    width:
+      default: 0.5
+      frequency: 10/19
+    cross_section:
+      default: strip
+      frequency: 12/19
+    allow_min_radius_violation:
+      default: false
+      frequency: 9/19
+    straight:
+      default: straight
+      frequency: 6/19
+    component:
+      default: bend_euler
+      frequency: 7/19
+    rows:
+      default: 6
+      frequency: 7/19
+    cols:
+      default: 5
+      frequency: 7/19
+  sample_count: 19
+  sample_components:
+  - bend_circular
+  - bend_circular180
+  - bend_circular_all_angle
+  - bend_circular_heater
+  - bend_euler
+  - bend_euler180
+  - bend_euler_all_angle
+  - bend_euler_s
+  - bend_s
+  - bend_s_offset
+  description: Returns a radial arc.
+pad:
+  ports: error
+  port_variants:
+  - error
+  params:
+    size:
+      default: 36.244
+      frequency: 13/17
+    layer:
+      default: MTOP
+      frequency: 10/17
+    columns:
+      default: 6
+      frequency: 7/17
+    rows:
+      default: 6
+      frequency: 6/17
+    column_pitch:
+      default: 121.89
+      frequency: 6/17
+    row_pitch:
+      default: 132.66
+      frequency: 6/17
+    auto_rename_ports:
+      default: false
+      frequency: 6/17
+    pad:
+      default: pad
+      frequency: 10/17
+    port_orientation:
+      default: 0
+      frequency: 8/17
+  sample_count: 17
+  sample_components:
+  - bump_pad
+  - bump_pad_grid
+  - die_frame_with_pads
+  - die_with_pads
+  - pad
+  - pad_array
+  - pad_array0
+  - pad_array180
+  - pad_array270
+  - pad_array90
+  description: Returns rectangular pad with ports.
+coupler:
+  ports: error
+  port_variants:
+  - error
+  params:
+    cross_section:
+      default: strip_no_ports
+      frequency: 29/36
+    gap:
+      default: 0.236
+      frequency: 12/36
+    fiber_angle:
+      default: 15.0
+      frequency: 11/36
+  sample_count: 36
+  sample_components:
+  - cdsem_coupler
+  - coupler
+  - coupler90
+  - coupler90bend
+  - coupler90circular
+  - coupler_adiabatic
+  - coupler_asymmetric
+  - coupler_bend
+  - coupler_bent
+  - coupler_broadband
+  description: Returns 2 coupled waveguides gap sweep.
+straight:
+  ports: error
+  port_variants:
+  - error
+  params:
+    length:
+      default: 420.0
+      frequency: 20/22
+    cross_section:
+      default: strip_no_ports
+      frequency: 20/22
+    via_stack:
+      default: via_stack_slab_m3
+      frequency: 14/22
+    width:
+      default: 0.5
+      frequency: 8/22
+    cross_section_heater:
+      default: rib_heater_doped
+      frequency: 7/22
+    port_orientation1:
+      default: 90
+      frequency: 7/22
+    port_orientation2:
+      default: 90
+      frequency: 7/22
+  sample_count: 22
+  sample_components:
+  - cdsem_straight
+  - cdsem_straight_density
+  - ge_detector_straight_si_contacts
+  - straight
+  - straight_all_angle
+  - straight_array
+  - straight_heater_doped_rib
+  - straight_heater_doped_strip
+  - straight_heater_meander
+  - straight_heater_meander_doped
+  description: Returns straight waveguide lines width sweep.
+ring:
+  ports: error
+  port_variants:
+  - error
+  params:
+    gap:
+      default: 0.2
+      frequency: 11/21
+    radius:
+      default: 10.0
+      frequency: 15/21
+    length_x:
+      default: 4.0
+      frequency: 11/21
+    bend:
+      default: bend_euler
+      frequency: 10/21
+    straight:
+      default: straight
+      frequency: 7/21
+    cross_section:
+      default: strip
+      frequency: 10/21
+    length_y:
+      default: 4.0
+      frequency: 8/21
+  sample_count: 21
+  sample_components:
+  - coupler_ring
+  - coupler_ring_bend
+  - resonator_cpw
+  - resonator_lumped
+  - resonator_quarter_wave
+  - ring
+  - ring_asymmetric
+  - ring_crow
+  - ring_crow_couplers
+  - ring_double
+  description: Coupler for ring.
+crossing:
+  ports: error
+  port_variants:
+  - error
+  params:
+    length:
+      default: 10.0
+      frequency: 7/11
+    npoints:
+      default: 101
+      frequency: 5/11
+    cross_section1:
+      default: strip_rib_tip
+      frequency: 4/11
+    cross_section2:
+      default: rib2
+      frequency: 4/11
+    linear:
+      default: false
+      frequency: 4/11
+    width_type:
+      default: sine
+      frequency: 4/11
+  sample_count: 11
+  sample_components:
+  - cross
+  - crossing
+  - crossing45
+  - crossing_etched
+  - crossing_linear_taper
+  - greek_cross
+  - greek_cross_with_pads
+  - taper_cross_section
+  - taper_cross_section_linear
+  - taper_cross_section_parabolic
+  description: Returns a cross from two rectangles of length and width.
+splitter:
+  ports: error
+  port_variants:
+  - error
+  params:
+    component:
+      default: mmi2x2
+      frequency: 2/5
+    cols:
+      default: 4
+      frequency: 2/5
+    rows:
+      default: 5
+      frequency: 2/5
+    port1:
+      default: o1
+      frequency: 2/5
+    port2:
+      default: o2
+      frequency: 2/5
+    port3:
+      default: o3
+      frequency: 2/5
+    bend180:
+      default: bend_circular180
+      frequency: 2/5
+    mirror:
+      default: false
+      frequency: 2/5
+    cross_section:
+      default: strip
+      frequency: 4/5
+    straight:
+      default: straight
+      frequency: 2/5
+  sample_count: 5
+  sample_components:
+  - cutback_2x2
+  - cutback_splitter
+  - polarization_splitter_rotator
+  - splitter_chain
+  - splitter_tree
+  description: Returns a daisy chain of splitters for measuring their loss.
+mmi:
+  ports: error
+  port_variants:
+  - error
+  params:
+    width:
+      default: 0.5
+      frequency: 5/9
+    width_taper:
+      default: 1.0
+      frequency: 5/9
+    length_taper:
+      default: 10.0
+      frequency: 5/9
+    length_mmi:
+      default: 5.5
+      frequency: 5/9
+    width_mmi:
+      default: 5
+      frequency: 5/9
+    taper:
+      default: taper
+      frequency: 4/9
+    straight:
+      default: straight
+      frequency: 4/9
+    cross_section:
+      default: strip
+      frequency: 7/9
+    gap_mmi:
+      default: 0.25
+      frequency: 3/9
+  sample_count: 9
+  sample_components:
+  - cutback_loss_mmi1x2
+  - mmi
+  - mmi1x2
+  - mmi1x2_with_sbend
+  - mmi2x2
+  - mmi2x2_with_sbend
+  - mmi_90degree_hybrid
+  - mmi_tapered
+  - mmi_widths
+  description: partial(func, *args, **keywords) - new function with partial application     of
+    the given arguments and keywords.
+taper:
+  ports: error
+  port_variants:
+  - error
+  params:
+    length:
+      default: 10.0
+      frequency: 11/19
+    cross_section:
+      default: strip
+      frequency: 15/19
+    width1:
+      default: 0.5
+      frequency: 9/19
+    width2:
+      default: 5.0
+      frequency: 9/19
+    filepath:
+      default: C:\Users\PC\Desktop\OPTI-AI\.venv\Lib\site-packages\gdsfactory\components\tapers\csv_data\taper_strip_0p5_3_36.csv
+      frequency: 7/19
+  sample_count: 19
+  sample_components:
+  - dbr_tapered
+  - taper
+  - taper_0p5_to_3_l36
+  - taper_adiabatic
+  - taper_electrical
+  - taper_from_csv
+  - taper_hecken
+  - taper_meander
+  - taper_nc_sc
+  - taper_parabolic
+  description: Distributed Bragg Reflector Cell class.      Tapers the input straight
+    to a     periodic straight structure with varying width (1-D photonic crystal).
+heater:
+  ports: error
+  port_variants:
+  - error
+  params:
+    size:
+      default:
+      - 11.0
+      - 11.0
+      frequency: 4/7
+    layers:
+      default:
+      - HEATER
+      - M2
+      frequency: 4/7
+    vias:
+      default:
+      - null
+      - via1
+      frequency: 4/7
+    correct_size:
+      default: false
+      frequency: 4/7
+    slot_horizontal:
+      default: false
+      frequency: 4/7
+    slot_vertical:
+      default: false
+      frequency: 4/7
+    port_orientations:
+      default:
+      - 180
+      - 90
+      - 0
+      - -90
+      frequency: 4/7
+  sample_count: 7
+  sample_components:
+  - disk_heater
+  - spiral_racetrack_heater_doped
+  - spiral_racetrack_heater_metal
+  - via_stack_heater_m2
+  - via_stack_heater_m3
+  - via_stack_heater_mtop
+  - via_stack_heater_mtop_mini
+  description: Disk Resonator with top metal heater.
+mzi:
+  ports: error
+  port_variants:
+  - error
+  params:
+    delta_length:
+      default: 10.0
+      frequency: 11/14
+    length_y:
+      default: 2.0
+      frequency: 10/14
+    length_x:
+      default: 0.1
+      frequency: 10/14
+    bend:
+      default: bend_euler
+      frequency: 9/14
+    straight:
+      default: straight
+      frequency: 10/14
+    straight_x_top:
+      default: straight_heater_metal
+      frequency: 9/14
+    splitter:
+      default: mmi1x2
+      frequency: 11/14
+    combiner:
+      default: mmi1x2
+      frequency: 9/14
+    with_splitter:
+      default: true
+      frequency: 9/14
+    port_e1_splitter:
+      default: o2
+      frequency: 9/14
+    port_e0_splitter:
+      default: o3
+      frequency: 9/14
+    port_e1_combiner:
+      default: o2
+      frequency: 9/14
+    port_e0_combiner:
+      default: o3
+      frequency: 9/14
+    port1:
+      default: o1
+      frequency: 9/14
+    port2:
+      default: o2
+      frequency: 9/14
+    nbends:
+      default: 2
+      frequency: 9/14
+    cross_section:
+      default: strip
+      frequency: 11/14
+    cross_section_x_top:
+      default: pin
+      frequency: 9/14
+    mirror_bot:
+      default: false
+      frequency: 9/14
+    add_optical_ports_arms:
+      default: false
+      frequency: 9/14
+    min_length:
+      default: 0.01
+      frequency: 9/14
+    auto_rename_ports:
+      default: true
+      frequency: 9/14
+    auto_detect_port_names:
+      default: false
+      frequency: 9/14
+  sample_count: 14
+  sample_components:
+  - mzi
+  - mzi1x2
+  - mzi1x2_2x2
+  - mzi2x2_2x2
+  - mzi2x2_2x2_phase_shifter
+  - mzi_coupler
+  - mzi_lattice
+  - mzi_lattice_mmi
+  - mzi_pads_center
+  - mzi_phase_shifter
+  description: Mzi.
+text:
+  ports: error
+  port_variants:
+  - error
+  params:
+    text:
+      default: abcd
+      frequency: 6/6
+    size:
+      default: 10.0
+      frequency: 4/6
+    position:
+      default:
+      - 0
+      - 0
+      frequency: 2/6
+    justify:
+      default: left
+      frequency: 3/6
+    layer:
+      default: WG
+      frequency: 5/6
+    font:
+      default: C:\Users\PC\Desktop\OPTI-AI\.venv\Lib\site-packages\gdsfactory\components\texts\fonts\OCR-A.ttf
+      frequency: 2/6
+    layers:
+      default:
+      - WG
+      - M1
+      - M2
+      - MTOP
+      frequency: 4/6
+  sample_count: 6
+  sample_components:
+  - text
+  - text_freetype
+  - text_klayout
+  - text_lines
+  - text_rectangular
+  - text_rectangular_multi_layer
+  description: Text shapes.
+via:
+  ports: error
+  port_variants:
+  - error
+  params:
+    size:
+      default:
+      - 0.7
+      - 0.7
+      frequency: 17/22
+    vias:
+      default:
+      - via1
+      frequency: 15/22
+    layers:
+      default:
+      - M1
+      - M2
+      - MTOP
+      frequency: 14/22
+    correct_size:
+      default: false
+      frequency: 11/22
+    slot_horizontal:
+      default: false
+      frequency: 10/22
+    slot_vertical:
+      default: false
+      frequency: 10/22
+    port_orientations:
+      default:
+      - 180
+      - 90
+      - 0
+      - -90
+      frequency: 10/22
+  sample_count: 22
+  sample_components:
+  - via
+  - via1
+  - via2
+  - via_chain
+  - via_circular
+  - via_corner
+  - via_stack
+  - via_stack_corner45
+  - via_stack_corner45_extended
+  - via_stack_m1_m3
+  description: Rectangular via.
+metal:
+  ports: error
+  port_variants:
+  - error
+  params:
+    cross_section:
+      default: metal_routing
+      frequency: 3/3
+    port_names:
+      default:
+      - e1
+      - e2
+      frequency: 1/3
+    port_types:
+      default:
+      - electrical
+      - electrical
+      frequency: 1/3
+    radius:
+      default: 10
+      frequency: 2/3
+    with_corner90_ports:
+      default: true
+      frequency: 1/3
+    port_type:
+      default: electrical
+      frequency: 1/3
+  sample_count: 3
+  sample_components:
+  - wire_corner
+  - wire_corner45
+  - wire_corner_sections
+  description: Returns 45 degrees electrical corner wire.

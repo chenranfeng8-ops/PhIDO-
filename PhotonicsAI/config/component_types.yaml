@@ -1,0 +1,565 @@
+# 组件类型基础定义
+# 用于验证新组件的参数和结构
+# 来源：gdsfactory 归纳 + 光子学专业知识
+
+# =============================================================================
+# 有源器件 (Active Devices)
+# =============================================================================
+
+y_branch:
+  description: "Y-Branch Splitter - Y分支分束器"
+  category: "passive"
+  
+  ports:
+    definition: "1x2"
+    description: "1输入2输出，通过Y形分支实现光功率分配"
+    variants:
+      - "1x2"    # 标准 Y 分支
+    rules: "对称分支，两个输出端口功率相等"
+  
+  structure:
+    min_nodes: 1
+    pattern: "single_input → s_bend_split → two_outputs"
+    subcomponents:
+      - "input waveguide"
+      - "s-bend splitting region"
+      - "two output waveguides"
+    connectivity_rules:
+      - "分支角度必须小于 30° 以减少损耗"
+      - "分支过渡区域长度至少 10um"
+      - "输出波导间距至少 2um 以避免耦合"
+  
+  params:
+    length:
+      default: 20.0
+      range: [5.0, 100.0]
+      unit: "um"
+      description: "Y分支总长度"
+    angle:
+      default: 10.0
+      range: [1.0, 30.0]
+      unit: "degrees"
+      description: "分支角度（每侧），越小损耗越低"
+    gap:
+      default: 2.0
+      range: [0.5, 5.0]
+      unit: "um"
+      description: "输出波导间距"
+    width:
+      default: 0.5
+      range: [0.3, 1.0]
+      unit: "um"
+      description: "波导宽度"
+    bend_radius:
+      default: 10.0
+      range: [5.0, 50.0]
+      unit: "um"
+      description: "弯曲半径，影响分支平滑度"
+  
+  physical_constraints:
+    - name: "insertion_loss"
+      formula: "α ≈ k * angle² / length"
+      typical_range: "0.1-1.0 dB"
+      description: "插入损耗与分支角度和长度相关"
+    - name: "splitting_ratio"
+      typical_range: "49:51 to 51:49"
+      description: "理想情况 50:50"
+  
+  performance:
+    insertion_loss: "0.1-1.0 dB"
+    splitting_ratio: "50:50 ±1%"
+    bandwidth: ">100 nm"
+    imbalance: "<0.2 dB"
+
+mzi:
+  description: "Mach-Zehnder Interferometer - 马赫-曾德干涉仪"
+  category: "active"
+  
+  ports:
+    definition: "2x2"
+    description: "2输入2输出，o1,o2为输入，o3,o4为输出"
+    variants:
+      - "2x2"    # 标准 MZI
+      - "1x2"    # 1输入2输出 (使用1x2 MMI作为splitter)
+    rules: "端口数量由splitter/combiner类型决定"
+  
+  structure:
+    min_nodes: 3
+    pattern: "splitter → (arm1, arm2) → combiner"
+    subcomponents:
+      - "splitter (MMI or DC)"
+      - "waveguide arms"
+      - "combiner (MMI or DC)"
+      - "optional: phase_shifter in arms"
+  
+  params:
+    delta_length:
+      default: 10.0
+      range: [0.1, 500.0]
+      unit: "um"
+      description: "两臂长度差，决定FSR"
+    length_x:
+      default: 0.1
+      range: [0, 200.0]
+      unit: "um"
+      description: "X方向臂长度"
+    length_y:
+      default: 2.0
+      range: [1.0, 100.0]
+      unit: "um"
+      description: "Y方向臂间距"
+    splitter:
+      default: "mmi1x2"
+      options: ["mmi1x2", "mmi2x2", "directional_coupler"]
+      description: "分束器类型"
+    combiner:
+      default: "mmi1x2"
+      options: ["mmi1x2", "mmi2x2", "directional_coupler"]
+      description: "合束器类型"
+    cross_section:
+      default: "strip"
+      description: "波导截面类型"
+  
+  physical_constraints:
+    - name: "FSR"
+      formula: "λ² / (n_g * delta_length)"
+      typical_range: "1-50 nm"
+      description: "自由光谱范围"
+    - name: "insertion_loss"
+      typical_range: "0.5-3 dB"
+    - name: "extinction_ratio"
+      typical_range: "15-30 dB"
+  
+  performance:
+    insertion_loss: "0.5-3 dB"
+    extinction_ratio: "15-30 dB"
+    bandwidth: "DC-50 GHz"
+
+modulator:
+  description: "Optical Modulator - 光调制器"
+  category: "active"
+  
+  ports:
+    definition: "2x2"
+    description: "类似MZI结构"
+    variants:
+      - "2x2"    # MZM
+      - "1x1"    # 相位调制器
+    rules: "调制类型决定端口配置"
+  
+  structure:
+    min_nodes: 1
+    pattern: "waveguide with active region"
+  
+  params:
+    length:
+      default: 320.0
+      range: [50.0, 5000.0]
+      unit: "um"
+      description: "调制区长度"
+    voltage:
+      default: 0.0
+      range: [0.0, 10.0]
+      unit: "V"
+      description: "驱动电压"
+    v_pi:
+      typical_range: "1-10 V"
+      description: "半波电压"
+  
+  physical_constraints:
+    - name: "V_pi_L"
+      formula: "V_pi * L"
+      typical_range: "1-10 V·cm"
+    - name: "bandwidth"
+      formula: "1 / (2π * RC)"
+      typical_range: "10-50 GHz"
+  
+  performance:
+    v_pi: "1-10 V"
+    bandwidth: "10-50 GHz"
+    insertion_loss: "2-6 dB"
+    extinction_ratio: "5-20 dB"
+
+heater:
+  description: "Thermo-optic Phase Shifter - 热光相位调制器"
+  category: "active"
+  
+  ports:
+    definition: "1x1"
+    description: "单输入单输出光端口，另有电端口"
+  
+  structure:
+    min_nodes: 1
+    pattern: "waveguide with heater element"
+  
+  params:
+    length:
+      default: 300.0
+      range: [50.0, 2000.0]
+      unit: "um"
+      description: "加热器长度"
+    width:
+      default: 3.5
+      range: [1.0, 10.0]
+      unit: "um"
+      description: "加热器宽度"
+  
+  physical_constraints:
+    - name: "power_consumption"
+      formula: "P = V² / R"
+      typical_range: "10-100 mW"
+    - name: "response_time"
+      typical_range: "1-100 us"
+  
+  performance:
+    power: "10-100 mW for π phase shift"
+    response_time: "1-100 us"
+    insertion_loss: "0.1-1 dB"
+
+# =============================================================================
+# 无源器件 (Passive Devices)
+# =============================================================================
+
+mmi:
+  description: "Multi-Mode Interferometer - 多模干涉器"
+  category: "passive"
+  
+  ports:
+    definition: "NxM"
+    description: "N输入M输出"
+    variants:
+      - "1x2"    # 1分2分束器
+      - "2x2"    # 2x2耦合器
+      - "1x3"    # 1分3分束器
+      - "1x4"    # 1分4分束器
+    rules: "N, M ∈ {1,2,3,4}, N+M ≥ 3"
+  
+  structure:
+    min_nodes: 1
+    pattern: "input_tapers → multimode_region → output_tapers"
+  
+  params:
+    length_mmi:
+      default: 5.5
+      range: [2.0, 100.0]
+      unit: "um"
+      description: "MMI区域长度"
+    width_mmi:
+      default: 2.5
+      range: [1.0, 20.0]
+      unit: "um"
+      description: "MMI区域宽度"
+    length_taper:
+      default: 10.0
+      range: [2.0, 30.0]
+      unit: "um"
+      description: "输入输出锥形长度"
+    width_taper:
+      default: 1.0
+      range: [0.3, 2.0]
+      unit: "um"
+      description: "锥形宽度"
+    gap_mmi:
+      default: 0.25
+      range: [0.1, 1.0]
+      unit: "um"
+      description: "输出波导间距"
+  
+  physical_constraints:
+    - name: "length_mmi_formula"
+      formula: "L = 3 * n_eff * W² / (4 * λ)"
+      description: "自成像条件"
+    - name: "width_mmi_formula"
+      formula: "W ≥ (N+M) * w_g + (N+M-1) * gap"
+      description: "最小宽度约束"
+  
+  performance:
+    insertion_loss: "0.1-1 dB"
+    imbalance: "0.1-0.5 dB"
+    bandwidth: ">50 nm"
+
+ring:
+  description: "Ring Resonator - 环形谐振器"
+  category: "passive"
+  
+  ports:
+    definition: "1x2 or 2x2"
+    description: "all-pass (1x2) 或 add-drop (2x2)"
+    variants:
+      - "1x2"    # All-pass configuration
+      - "2x2"    # Add-drop configuration
+    rules: "端口配置由耦合器数量决定"
+  
+  structure:
+    min_nodes: 2
+    pattern: "ring + bus_waveguide(s)"
+    subcomponents:
+      - "ring waveguide"
+      - "bus waveguide(s)"
+      - "coupling region (DC or MMI)"
+  
+  params:
+    radius:
+      default: 10.0
+      range: [2.0, 100.0]
+      unit: "um"
+      description: "环半径"
+    gap:
+      default: 0.2
+      range: [0.1, 1.0]
+      unit: "um"
+      description: "耦合间隙"
+    length_x:
+      default: 4.0
+      range: [0, 50.0]
+      unit: "um"
+      description: "跑道型环的直波导长度"
+  
+  physical_constraints:
+    - name: "FSR"
+      formula: "λ² / (n_g * 2πr)"
+      typical_range: "1-50 nm"
+    - name: "Q_factor"
+      formula: "λ / FWHM"
+      typical_range: "1000-100000"
+    - name: "finesse"
+      formula: "FSR / FWHM"
+      typical_range: "10-100"
+  
+  performance:
+    FSR: "1-50 nm"
+    Q_factor: "1000-100000"
+    extinction_ratio: "10-30 dB"
+    insertion_loss: "0.5-3 dB"
+
+coupler:
+  description: "Directional Coupler - 定向耦合器"
+  category: "passive"
+  
+  ports:
+    definition: "2x2"
+    description: "2输入2输出"
+    rules: "标准配置，耦合比可调"
+  
+  structure:
+    min_nodes: 1
+    pattern: "two_parallel_waveguides"
+  
+  params:
+    length:
+      default: 10.0
+      range: [1.0, 500.0]
+      unit: "um"
+      description: "耦合长度"
+    gap:
+      default: 0.2
+      range: [0.1, 1.0]
+      unit: "um"
+      description: "波导间距"
+  
+  physical_constraints:
+    - name: "coupling_ratio"
+      formula: "sin²(κ * L)"
+      typical_range: "0-1"
+    - name: "crosstalk"
+      typical_range: "-30 to -10 dB"
+  
+  performance:
+    coupling_ratio: "可调 (0-100%)"
+    insertion_loss: "0.1-0.5 dB"
+    crosstalk: "<-20 dB"
+
+grating:
+  description: "Grating Coupler - 光栅耦合器"
+  category: "passive"
+  
+  ports:
+    definition: "1x1"
+    description: "单光纤耦合端口"
+    rules: "用于光纤-芯片耦合"
+  
+  structure:
+    min_nodes: 1
+    pattern: "periodic_teeth"
+  
+  params:
+    period:
+      default: 0.63
+      range: [0.3, 1.0]
+      unit: "um"
+      description: "光栅周期"
+    fill_factor:
+      default: 0.5
+      range: [0.3, 0.7]
+      description: "占空比"
+    n_periods:
+      default: 20
+      range: [10, 50]
+      description: "光栅周期数"
+  
+  physical_constraints:
+    - name: "Bragg_condition"
+      formula: "λ = 2 * n_eff * period"
+      description: "布拉格条件"
+    - name: "coupling_angle"
+      formula: "sin(θ) = λ / period - n_eff"
+      typical_range: "5-30 degrees"
+  
+  performance:
+    coupling_efficiency: "30-70% (-1.5 to -5 dB)"
+    bandwidth: "30-100 nm"
+    alignment_tolerance: "±1-2 um"
+
+crossing:
+  description: "Waveguide Crossing - 波导交叉"
+  category: "passive"
+  
+  ports:
+    definition: "2x2"
+    description: "两波导交叉"
+    rules: "低损耗交叉设计"
+  
+  structure:
+    min_nodes: 1
+    pattern: "orthogonal_or_45deg_crossing"
+  
+  params:
+    length:
+      default: 10.0
+      range: [5.0, 50.0]
+      unit: "um"
+      description: "交叉区域长度"
+    width:
+      default: 0.5
+      range: [0.3, 2.0]
+      unit: "um"
+      description: "交叉点宽度"
+  
+  performance:
+    crossing_loss: "0.01-0.2 dB per crossing"
+    crosstalk: "<-40 dB"
+
+# =============================================================================
+# 波导 (Waveguides)
+# =============================================================================
+
+straight:
+  description: "Straight Waveguide - 直波导"
+  category: "passive"
+  
+  ports:
+    definition: "1x1"
+    description: "单输入单输出"
+  
+  params:
+    length:
+      default: 10.0
+      range: [0.1, 10000.0]
+      unit: "um"
+      description: "波导长度"
+    width:
+      default: 0.5
+      range: [0.3, 3.0]
+      unit: "um"
+      description: "波导宽度"
+  
+  performance:
+    propagation_loss: "1-3 dB/cm (strip), 0.1-1 dB/cm (rib)"
+
+bend:
+  description: "Bent Waveguide - 弯曲波导"
+  category: "passive"
+  
+  ports:
+    definition: "1x1"
+    description: "单输入单输出"
+  
+  params:
+    radius:
+      default: 10.0
+      range: [2.0, 100.0]
+      unit: "um"
+      description: "弯曲半径"
+    angle:
+      default: 90.0
+      range: [1.0, 180.0]
+      unit: "degrees"
+      description: "弯曲角度"
+  
+  physical_constraints:
+    - name: "min_radius"
+      formula: "R_min ≈ 10 * width"
+      description: "最小弯曲半径约束"
+    - name: "bend_loss"
+      formula: "α_bend ∝ exp(-R/R0)"
+  
+  performance:
+    bend_loss: "0.001-0.1 dB per 90° (R=10um)"
+
+taper:
+  description: "Taper - 锥形波导"
+  category: "passive"
+  
+  ports:
+    definition: "1x1"
+    description: "宽度变化的波导"
+  
+  params:
+    length:
+      default: 10.0
+      range: [1.0, 200.0]
+      unit: "um"
+      description: "锥形长度"
+    width1:
+      default: 0.5
+      range: [0.1, 5.0]
+      unit: "um"
+      description: "输入宽度"
+    width2:
+      default: 5.0
+      range: [0.1, 20.0]
+      unit: "um"
+      description: "输出宽度"
+  
+  physical_constraints:
+    - name: "adiabatic_condition"
+      formula: "L > |W2-W1| / tan(θ_max)"
+      description: "绝热条件，θ_max ≈ 0.5°"
+  
+  performance:
+    insertion_loss: "0.01-0.5 dB"
+    mode_conversion: ">95% for adiabatic"
+
+# =============================================================================
+# 电气组件 (Electrical)
+# =============================================================================
+
+via:
+  description: "Via - 通孔"
+  category: "electrical"
+  
+  ports:
+    definition: "electrical"
+    description: "电气连接"
+  
+  params:
+    size:
+      default: [0.7, 0.7]
+      range: [[0.3, 0.3], [5.0, 5.0]]
+      unit: "um"
+      description: "通孔尺寸 [width, height]"
+
+pad:
+  description: "Pad - 焊盘"
+  category: "electrical"
+  
+  ports:
+    definition: "electrical"
+    description: "电气连接点"
+  
+  params:
+    size:
+      default: [50.0, 50.0]
+      range: [[10.0, 10.0], [200.0, 200.0]]
+      unit: "um"
+      description: "焊盘尺寸"

@@ -11,6 +11,14 @@ from selenium.webdriver.common.by import By
 from webdriver_manager.chrome import ChromeDriverManager
 import gdsfactory as gf
 
+# 导入组件类型验证器
+try:
+    from PhotonicsAI.Photon import component_type_validator as type_validator
+except ImportError:
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from PhotonicsAI.Photon import component_type_validator as type_validator
+
 # ==================== 配置区域 ====================
 
 # 目标输出目录 (DesignLibrary)
@@ -191,6 +199,77 @@ def {func_name}(
     return c
 ''',
 
+    "ring": '''
+import gdsfactory as gf
+
+@gf.cell
+def {func_name}(
+    radius: float = {radius},
+    gap: float = {gap},
+    length_x: float = {length_x},
+) -> gf.Component:
+    """Auto-generated Ring Resonator from: {title}
+    Source: {link}
+    """
+    c = gf.Component()
+    ref = c << gf.components.ring_single(
+        radius=radius,
+        gap=gap,
+        length_x=length_x,
+    )
+    c.add_ports(ref.ports)
+    return c
+''',
+
+    "mzi": '''
+import gdsfactory as gf
+
+@gf.cell
+def {func_name}(
+    delta_length: float = {delta_length},
+    length_x: float = {length_x},
+    length_y: float = {length_y},
+) -> gf.Component:
+    """Auto-generated MZI from: {title}
+    Source: {link}
+    """
+    c = gf.Component()
+    ref = c << gf.components.mzi(
+        delta_length=delta_length,
+        length_x=length_x,
+        length_y=length_y,
+        splitter=gf.components.mmi1x2,
+        combiner=gf.components.mmi1x2,
+    )
+    c.add_ports(ref.ports)
+    return c
+''',
+
+    "y_branch": '''
+import gdsfactory as gf
+
+@gf.cell
+def {func_name}(
+    length: float = {length},
+    separation: float = {gap},
+) -> gf.Component:
+    """Auto-generated Y-Branch Splitter from: {title}
+    Source: {link}
+    
+    Y-branch splitter using mmi1x2_with_sbend for smooth transition.
+    """
+    c = gf.Component()
+    
+    # Use mmi1x2_with_sbend which has proper S-bend outputs
+    ref = c << gf.components.mmi1x2_with_sbend(
+        length_mmi=length * 0.5,
+        width_mmi=separation * 2.5,
+        gap_mmi=separation,
+    )
+    c.add_ports(ref.ports)
+    return c
+''',
+
     "waveguide_crossing": '''
 import gdsfactory as gf
 
@@ -306,7 +385,12 @@ def extract_params_with_llm(text, device_type):
             
         client = ZhipuAI(api_key=api_key)
         
-        prompt = f"""
+        # 使用类型验证器生成带约束的 prompt
+        component_type = type_validator.classify_component_type(device_type)
+        type_def = type_validator.get_type_definition(component_type) if component_type else None
+        
+        # 构建基础 prompt
+        base_prompt = f"""
         You are an expert in silicon photonics PDK development. 
         Extract key geometry parameters for a "{device_type}" device from the following text.
         
@@ -319,6 +403,36 @@ def extract_params_with_llm(text, device_type):
         
         If a parameter is not explicitly found, estimate a standard value for a 220nm SOI platform (C-band).
         Do not include markdown formatting like ```json.
+        """
+        
+        # 如果有类型定义，添加约束
+        if type_def:
+            params_spec = []
+            for param_name, param_def in type_def.get("params", {}).items():
+                range_str = f" (范围: {param_def['range']})" if "range" in param_def else ""
+                default_str = f", 默认: {param_def['default']}" if "default" in param_def else ""
+                params_spec.append(f"  - {param_name}{range_str}{default_str}")
+            
+            ports_def = type_def.get("ports", {})
+            
+            base_prompt = f"""
+        You are an expert in silicon photonics PDK development.
+        Extract geometry parameters for a "{device_type}" ({component_type}) device.
+        
+        === 组件类型定义 (必须遵守) ===
+        描述: {type_def.get('description', '')}
+        端口: {ports_def.get('definition', 'unknown')}
+        
+        参数规范:
+{chr(10).join(params_spec) if params_spec else '  (无特定参数定义)'}
+        
+        === 提取规则 ===
+        1. 参数值必须在指定范围内
+        2. 缺失参数使用默认值
+        3. 输出 JSON 格式，不要 markdown 代码块
+        """
+        
+        base_prompt += f"""
         
         Text:
         {text[:4000]}
@@ -326,12 +440,24 @@ def extract_params_with_llm(text, device_type):
         
         response = client.chat.completions.create(
             model="glm-4-flash",  # 使用免费的 flash 模型
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": base_prompt}],
         )
         # GLM-4 的返回格式可能包含 markdown 代码块，需要清理
         content = response.choices[0].message.content
         content = content.replace("```json", "").replace("```", "").strip()
-        return json.loads(content)
+        params = json.loads(content)
+        
+        # 使用类型验证器验证参数
+        if component_type and params:
+            validation = type_validator.verify_params(component_type, params)
+            if not validation["valid"]:
+                print(f"  [Validation] 参数验证失败: {validation.get('adjustments', [])}")
+            if validation.get("adjustments"):
+                print(f"  [Validation] 参数调整: {validation['adjustments']}")
+            # 使用验证/修正后的参数
+            return validation["params"]
+        
+        return params
         
     except ImportError:
         print("ZhipuAI library not installed. Run `pip install zhipuai`.")
@@ -442,7 +568,6 @@ def generate_component_file(paper_info):
 
 
 # ==================== 核心新接口: 多论文聚合 -> 单模板生成 ====================
-
 def _generate_search_keywords_with_llm(component_name, device_type=None):
     """使用 LLM 动态生成学术搜索关键词。
     
@@ -511,16 +636,37 @@ def _resolve_device_type(component_name):
     """
     name_lower = component_name.lower()
     mapping = {
+        # Y 分支 (放在最前面，优先级最高)
+        "y_branch": ["y_branch", "y branch", "y-branch", "ybranch", "y splitter"],
+        # 光电探测器
         "ge_pd": ["germanium", "ge pd", "ge photodetector", "photodetector", "ge-pd"],
-        "si_modulator": ["modulator", "mzm", "mach-zehnder modulator", "si modulator"],
-        "si_phase_shifter": ["phase shifter", "heater", "thermo-optic"],
-        "mmi1x2": ["mmi 1x2", "1x2 mmi", "mmi1x2", "1x2 splitter"],
-        "mmi2x2": ["mmi 2x2", "2x2 mmi", "mmi2x2", "2x2 coupler mmi"],
+        # 调制器
+        "si_modulator": ["modulator", "mzm", "mach-zehnder modulator", "si modulator", "pn diode", "pindiode"],
+        # 相移器/加热器
+        "si_phase_shifter": ["phase shifter", "thermo-optic", "thermal"],
+        "heater": ["heater", "heater_tin", "tin heater"],
+        # MMI
+        "mmi1x2": ["mmi 1x2", "1x2 mmi", "mmi1x2", "1x2 splitter", "mmi_1x2"],
+        "mmi2x2": ["mmi 2x2", "2x2 mmi", "mmi2x2", "2x2 coupler mmi", "mmi_2x2"],
+        "mmi": ["mmi", "multimode interferometer"],
+        # 环形谐振器
+        "ring": ["ring resonator", "ring", "mrr", "micro-ring"],
+        # MZI
+        "mzi": ["mzi", "mach-zehnder interferometer", "mach_zehnder"],
+        # 交叉
         "waveguide_crossing": ["crossing", "waveguide crossing"],
-        "grating_coupler": ["grating coupler", "grating", "gc ", "fiber coupler"],  # 注意 "gc " 加空格避免误匹配
+        # 光栅耦合器 (放在 coupler 前面，优先级更高)
+        "grating_coupler": ["grating coupler", "grating", "gc ", "fiber coupler"],
+        # 边缘耦合器
         "edge_coupler": ["edge coupler", "spot size converter", "ssc", "inverse taper"],
-        "directional_coupler": ["directional coupler", "dc coupler"],
+        # 定向耦合器
+        "directional_coupler": ["directional coupler", "dc coupler", "coupler"],
+        # 偏振
         "pbs_pbr": ["polarization", "pbs", "pbr", "polarization beam splitter"],
+        # 波导
+        "straight": ["straight waveguide", "straight"],
+        "bend": ["bend", "bent waveguide"],
+        "taper": ["taper"],
     }
     # 优先检查更具体的匹配（grating_coupler 要在 directional_coupler 之前）
     for dtype, keywords in mapping.items():
@@ -668,7 +814,6 @@ Do NOT include markdown formatting. Output pure JSON only.
 
 
 # ==================== 论文质量评判与排序 ====================
-
 def _rank_papers_with_llm(papers, device_type, top_n=8):
     """使用 LLM 对论文进行质量评分和排序。
     
@@ -810,6 +955,245 @@ Sort by score descending. Output pure JSON only, no markdown.
         return papers[:top_n]
 
 
+def resolve_device_type_and_keywords(component_name):
+    """解析组件类型并生成搜索关键词（含降级策略）。
+
+    Returns:
+        dict: {
+            "ok": bool,
+            "data": {
+                "device_type": str,
+                "keywords": list[str],
+                "fallback_reason": str,
+            },
+            "error": str | None,
+        }
+    """
+    device_type = _resolve_device_type(component_name)
+    if not device_type:
+        return {
+            "ok": False,
+            "data": {},
+            "error": f"Cannot map '{component_name}' to a known device type. Supported: {list(TEMPLATES.keys())}",
+        }
+
+    keywords = _generate_search_keywords_with_llm(component_name, device_type)
+    fallback_reason = "llm_generated"
+
+    if not keywords:
+        keywords = DEVICE_keywords.get(device_type)
+        fallback_reason = "hardcoded"
+        if keywords:
+            print(f"  [Keywords] Falling back to hardcoded keywords ({len(keywords)} keywords)")
+
+    if not keywords:
+        keywords = [f"{component_name} silicon photonics", f"{component_name} design optimization"]
+        fallback_reason = "component_name"
+        print("  [Keywords] Using component name as search keyword")
+
+    return {
+        "ok": True,
+        "data": {
+            "device_type": device_type,
+            "keywords": keywords,
+            "fallback_reason": fallback_reason,
+        },
+        "error": None,
+    }
+
+
+def retrieve_papers_multi_source(device_type, keywords, max_papers=8):
+    """多源检索论文，返回原始结果与来源统计。"""
+    driver = None
+    all_papers = []
+    source_stats = {
+        "arxiv": 0,
+        "google_scholar": 0,
+        "optica": 0,
+        "total_raw": 0,
+    }
+    error_msg = None
+
+    try:
+        driver = init_driver()
+
+        print("  [Source: ArXiv]")
+        for kw in keywords[:4]:
+            papers = search_arxiv(driver, kw, device_type)
+            all_papers.extend(papers)
+            source_stats["arxiv"] += len(papers)
+            print(f"    Found {len(papers)} papers for '{kw}'")
+            if len(all_papers) >= max_papers:
+                break
+
+        if len(all_papers) < max_papers:
+            print("  [Source: Google Scholar]")
+            for kw in keywords[:3]:
+                papers = search_google_scholar(driver, kw, device_type)
+                all_papers.extend(papers)
+                source_stats["google_scholar"] += len(papers)
+                print(f"    Found {len(papers)} papers for '{kw}'")
+                if len(all_papers) >= max_papers * 2:
+                    break
+
+        if len(all_papers) < max_papers:
+            print("  [Source: Optica/OSA]")
+            for kw in keywords[:2]:
+                papers = search_optica(driver, kw, device_type)
+                all_papers.extend(papers)
+                source_stats["optica"] += len(papers)
+                print(f"    Found {len(papers)} papers for '{kw}'")
+                if len(all_papers) >= max_papers * 2:
+                    break
+
+    except Exception as e:
+        error_msg = f"Crawler error: {e}"
+    finally:
+        if driver:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+
+    source_stats["total_raw"] = len(all_papers)
+    return {
+        "ok": True,
+        "data": {
+            "papers": all_papers,
+            "source_stats": source_stats,
+        },
+        "error": error_msg,
+    }
+
+
+def rank_and_dedup_papers(papers, device_type, top_n=8):
+    """按标题去重并进行质量排序，输出 Top-N。"""
+    seen_titles = set()
+    unique_papers = []
+
+    for p in papers:
+        title = p.get("title", "").strip()
+        if title and title not in seen_titles:
+            seen_titles.add(title)
+            unique_papers.append(p)
+
+    print(f"[Discovery] {len(unique_papers)} unique papers found across all sources.")
+
+    llm_used = False
+    if len(unique_papers) > top_n:
+        print(f"[Discovery] Ranking {len(unique_papers)} papers to select top {top_n}...")
+        ranked_papers = _rank_papers_with_llm(unique_papers, device_type, top_n=top_n)
+        llm_used = True
+    else:
+        ranked_papers = unique_papers
+
+    return {
+        "ok": True,
+        "data": {
+            "ranked_papers": ranked_papers,
+            "ranking_meta": {
+                "total_input": len(papers),
+                "total_unique": len(unique_papers),
+                "total_output": len(ranked_papers),
+                "llm_used": llm_used,
+            },
+        },
+        "error": None,
+    }
+
+
+def extract_or_aggregate_params(papers, device_type):
+    """统一参数策略节点：多篇聚合 / 单篇提取 / 默认降级。"""
+    params = {}
+    confidence_note = ""
+    provenance = "heuristic_default"
+
+    if len(papers) >= 2:
+        agg_result = _aggregate_params_with_llm(papers, device_type)
+        if agg_result and agg_result[0]:
+            params, confidence_note = agg_result
+            provenance = "llm_aggregate"
+
+    elif len(papers) == 1:
+        single_text = papers[0].get("full_text") or papers[0].get("abstract", "")
+        params = extract_params_heuristic(single_text, device_type)
+        confidence_note = f"Single paper: {papers[0].get('title', 'N/A')}"
+        provenance = "heuristic_single"
+
+    if not params:
+        params = extract_params_heuristic("", device_type)
+        confidence_note = "No papers found; using default 220nm SOI C-band values."
+        provenance = "heuristic_default"
+
+    return {
+        "ok": True,
+        "data": {
+            "params": params,
+            "confidence_note": confidence_note,
+            "provenance": provenance,
+        },
+        "error": None,
+    }
+
+
+def generate_template_file(device_type, params, papers, confidence_note=""):
+    """基于参数与论文来源生成单个共识模板文件。"""
+    if device_type not in TEMPLATES:
+        return {
+            "ok": False,
+            "data": {},
+            "error": f"No code template defined for device_type='{device_type}'.",
+        }
+
+    func_name = f"auto_{device_type}_consensus"
+    filename = f"{func_name}.py"
+    filepath = os.path.join(OUTPUT_DIR, filename)
+
+    if papers:
+        sources_cited = [p.get("title", "N/A")[:60] for p in papers[:5]]
+        sources = "; ".join(sources_cited)
+    else:
+        sources_cited = ["Default parameters (no papers retrieved)"]
+        sources = sources_cited[0]
+
+    try:
+        code = TEMPLATES[device_type].format(
+            func_name=func_name,
+            title=f"Consensus parameters from {len(papers)} papers",
+            link=sources,
+            **params,
+        )
+
+        if not os.path.exists(OUTPUT_DIR):
+            os.makedirs(OUTPUT_DIR)
+
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(code)
+
+        print(f"[Discovery] SUCCESS: Generated ONE template -> {filename}")
+        return {
+            "ok": True,
+            "data": {
+                "filepath": filepath,
+                "render_meta": {
+                    "func_name": func_name,
+                    "filename": filename,
+                    "sources_cited": sources_cited,
+                    "device_type": device_type,
+                    "confidence_note": confidence_note,
+                },
+            },
+            "error": None,
+        }
+
+    except Exception as e:
+        return {
+            "ok": False,
+            "data": {},
+            "error": f"Code generation failed: {e}",
+        }
+
+
 def discover_and_generate(component_name, max_papers=8):
     """核心新接口：根据组件名，执行完整的 Discovery 流程。
     
@@ -844,90 +1228,28 @@ def discover_and_generate(component_name, max_papers=8):
         "error": None,
     }
 
-    # Step 1: 映射设备类型
-    device_type = _resolve_device_type(component_name)
-    if not device_type:
-        result["error"] = f"Cannot map '{component_name}' to a known device type. Supported: {list(TEMPLATES.keys())}"
+    # Step 1: 解析设备类型 + 关键词
+    print(f"[Discovery] Generating search keywords for '{component_name}'...")
+    resolved = resolve_device_type_and_keywords(component_name)
+    if not resolved["ok"]:
+        result["error"] = resolved["error"]
         return result
+
+    device_type = resolved["data"]["device_type"]
+    keywords = resolved["data"]["keywords"]
     result["device_type"] = device_type
 
-    # Step 2: 获取搜索关键词 (优先 LLM 动态生成, 降级到硬编码)
-    print(f"[Discovery] Generating search keywords for '{component_name}'...")
-    keywords = _generate_search_keywords_with_llm(component_name, device_type)
-    if not keywords:
-        # 降级到硬编码关键词
-        keywords = DEVICE_keywords.get(device_type)
-        if keywords:
-            print(f"  [Keywords] Falling back to hardcoded keywords ({len(keywords)} keywords)")
-        else:
-            # 最终降级：使用组件名本身作为关键词
-            keywords = [f"{component_name} silicon photonics", f"{component_name} design optimization"]
-            print(f"  [Keywords] Using component name as search keyword")
-
-    # Step 3: 多源爬虫搜索论文 (ArXiv + Google Scholar + Optica)
+    # Step 2: 多源检索论文
     print(f"[Discovery] Searching papers for '{component_name}' (type={device_type})...")
-    driver = None
-    all_papers = []
-    try:
-        driver = init_driver()
-        
-        # 3a. ArXiv 搜索
-        print("  [Source: ArXiv]")
-        for kw in keywords[:4]:  # ArXiv 用前 4 个关键词
-            papers = search_arxiv(driver, kw, device_type)
-            all_papers.extend(papers)
-            print(f"    Found {len(papers)} papers for '{kw}'")
-            if len(all_papers) >= max_papers:
-                break
-        
-        # 3b. Google Scholar 搜索 (补充)
-        if len(all_papers) < max_papers:
-            print("  [Source: Google Scholar]")
-            for kw in keywords[:3]:  # Scholar 用前 3 个关键词
-                papers = search_google_scholar(driver, kw, device_type)
-                all_papers.extend(papers)
-                print(f"    Found {len(papers)} papers for '{kw}'")
-                if len(all_papers) >= max_papers * 2:
-                    break
-        
-        # 3c. Optica (OSA) 搜索 (补充)
-        if len(all_papers) < max_papers:
-            print("  [Source: Optica/OSA]")
-            for kw in keywords[:2]:  # Optica 用前 2 个关键词
-                papers = search_optica(driver, kw, device_type)
-                all_papers.extend(papers)
-                print(f"    Found {len(papers)} papers for '{kw}'")
-                if len(all_papers) >= max_papers * 2:
-                    break
-                    
-    except Exception as e:
-        result["error"] = f"Crawler error: {e}"
-        # 即使爬虫失败，仍然尝试用默认参数生成
-    finally:
-        if driver:
-            try:
-                driver.quit()
-            except:
-                pass
+    retrieved = retrieve_papers_multi_source(device_type, keywords, max_papers=max_papers)
+    raw_papers = retrieved["data"]["papers"]
+    if retrieved["error"]:
+        result["error"] = retrieved["error"]
 
-    # 去重 (按标题)
-    seen_titles = set()
-    unique_papers = []
-    for p in all_papers:
-        title = p.get("title", "").strip()
-        if title and title not in seen_titles:
-            seen_titles.add(title)
-            unique_papers.append(p)
-    
-    print(f"[Discovery] {len(unique_papers)} unique papers found across all sources.")
+    # Step 3: 去重与排序
+    ranked = rank_and_dedup_papers(raw_papers, device_type, top_n=max_papers)
+    all_papers = ranked["data"]["ranked_papers"]
 
-    # Step 3.5: 论文质量评判与排序
-    if len(unique_papers) > max_papers:
-        print(f"[Discovery] Ranking {len(unique_papers)} papers to select top {max_papers}...")
-        all_papers = _rank_papers_with_llm(unique_papers, device_type, top_n=max_papers)
-    else:
-        all_papers = unique_papers
-    
     result["papers_found"] = len(all_papers)
     # 保存评分信息用于前端展示
     result["paper_rankings"] = [
@@ -942,63 +1264,23 @@ def discover_and_generate(component_name, max_papers=8):
     ]
     print(f"[Discovery] Using {len(all_papers)} top-ranked papers for parameter aggregation.")
 
-    # Step 4: 参数提取 (优先 LLM 聚合, 降级到启发式)
-    params = {}
-    confidence_note = ""
-    
-    if len(all_papers) >= 2:
-        # 有多篇论文，用 LLM 聚合
-        agg_result = _aggregate_params_with_llm(all_papers, device_type)
-        if agg_result and agg_result[0]:
-            params, confidence_note = agg_result
-    elif len(all_papers) == 1:
-        # 只有一篇论文，单独提取
-        params = extract_params_heuristic(all_papers[0]['full_text'], device_type)
-        confidence_note = f"Single paper: {all_papers[0].get('title', 'N/A')}"
-    
-    if not params:
-        # 降级：使用默认参数
-        params = extract_params_heuristic("", device_type)
-        confidence_note = "No papers found; using default 220nm SOI C-band values."
-    
-    result["params"] = params
-    result["confidence_note"] = confidence_note
+    # Step 4: 参数提取与聚合
+    params_result = extract_or_aggregate_params(all_papers, device_type)
+    result["params"] = params_result["data"]["params"]
+    result["confidence_note"] = params_result["data"]["confidence_note"]
 
-    # Step 5: 生成 ONE 模板文件
-    if device_type not in TEMPLATES:
-        result["error"] = f"No code template defined for device_type='{device_type}'."
-        return result
-
-    func_name = f"auto_{device_type}_consensus"
-    filename = f"{func_name}.py"
-    filepath = os.path.join(OUTPUT_DIR, filename)
-
-    # 构造来源引用字符串
-    if all_papers:
-        sources = "; ".join([f"{p.get('title', 'N/A')[:60]}" for p in all_papers[:5]])
+    # Step 5: 生成模板文件
+    render_result = generate_template_file(
+        device_type=device_type,
+        params=result["params"],
+        papers=all_papers,
+        confidence_note=result["confidence_note"],
+    )
+    if render_result["ok"]:
+        result["filepath"] = render_result["data"]["filepath"]
     else:
-        sources = "Default parameters (no papers retrieved)"
-
-    try:
-        code = TEMPLATES[device_type].format(
-            func_name=func_name,
-            title=f"Consensus parameters from {len(all_papers)} papers",
-            link=sources,
-            **params
-        )
-
-        if not os.path.exists(OUTPUT_DIR):
-            os.makedirs(OUTPUT_DIR)
-
-        with open(filepath, 'w', encoding='utf-8') as f:
-            f.write(code)
-
-        print(f"[Discovery] SUCCESS: Generated ONE template -> {filename}")
-        result["filepath"] = filepath
-
-    except Exception as e:
-        result["error"] = f"Code generation failed: {e}"
-        print(f"[Discovery] ERROR: {e}")
+        result["error"] = render_result["error"]
+        print(f"[Discovery] ERROR: {render_result['error']}")
 
     return result
 
@@ -1077,7 +1359,6 @@ def fetch_full_paper_text(driver, arxiv_link, max_chars=15000):
 
 
 # ==================== 爬虫逻辑 (ArXiv) ====================
-
 def search_arxiv(driver, keyword, device_type, fetch_full=True):
     """搜索 ArXiv 论文并收集信息。
     
@@ -1140,7 +1421,6 @@ def search_arxiv(driver, keyword, device_type, fetch_full=True):
 
 
 # ==================== 爬虫逻辑 (Google Scholar) ====================
-
 def search_google_scholar(driver, keyword, device_type, fetch_full=False):
     """搜索 Google Scholar 论文。
     
@@ -1230,7 +1510,6 @@ def search_google_scholar(driver, keyword, device_type, fetch_full=False):
 
 
 # ==================== 爬虫逻辑 (Optica / OSA) ====================
-
 def search_optica(driver, keyword, device_type, fetch_full=True):
     """搜索 Optica Publishing Group (原 OSA) 论文。
     

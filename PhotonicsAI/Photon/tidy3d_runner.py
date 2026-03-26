@@ -373,71 +373,93 @@ def run_tidy3d_simulation(
         except Exception as pe:
             lines.append(f"YZ plot failed: {pe}")
         
-        # Run simulation on cloud
-        api_key = os.getenv("TIDY3D_API_KEY")
-        if api_key:
+        # Run simulation - try local mode first, then cloud
+        use_local = os.getenv("TIDY3D_LOCAL", "1") == "1"  # Default to local mode
+        
+        if use_local:
+            # Local FDTD simulation (no API key needed)
+            lines.append("Running local FDTD simulation...")
             try:
-                from tidy3d import web
+                import tidy3d as td
                 
-                web.configure(apikey=api_key)
-                lines.append("Configured Tidy3D API")
+                # Run locally
+                sim_data = td.webapi.webapi.run_local(
+                    sim,
+                    task_name=f"local_{component_type}",
+                    path=str(PATH.build / "tidy3d_data.hdf5"),
+                )
+                lines.append("Local simulation completed!")
+                result = "success"
+                data = sim_data
                 
-                task_name = f"PhIDO-{component_type}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
-                lines.append(f"Starting cloud run: {task_name}")
-                
-                # Run simulation with encoding fix for Windows
-                import io
-                import sys
-                old_stdout = sys.stdout
-                old_stderr = sys.stderr
+                # Plot field data
                 try:
-                    # Redirect to UTF-8 capable streams for Tidy3D output
-                    if sys.platform == "win32":
-                        # Use StringIO to capture output and avoid encoding issues
-                        sys.stdout = io.StringIO()
-                        sys.stderr = io.StringIO()
-                    
-                    data = web.run(
-                        simulation=sim,
-                        task_name=task_name,
-                        path=str(PATH.build / "tidy3d_data.hdf5"),
-                    )
-                    result = "success"
-                except UnicodeEncodeError as ue:
-                    # Unicode error from Tidy3D output - simulation likely succeeded
-                    lines.append(f"Note: Unicode output issue (simulation may have succeeded)")
-                    result = "unicode_warning"
-                    data = None
-                finally:
-                    if sys.platform == "win32":
-                        # Capture any output for debugging
-                        try:
-                            stdout_capture = sys.stdout.getvalue() if hasattr(sys.stdout, 'getvalue') else ""
-                            stderr_capture = sys.stderr.getvalue() if hasattr(sys.stderr, 'getvalue') else ""
-                        except:
-                            pass
-                        sys.stdout = old_stdout
-                        sys.stderr = old_stderr
-                
-                if result == "success":
-                    lines.append("Cloud simulation completed!")
-                
-                # Try to plot field data
-                try:
-                    if "field_monitor" in data:
-                        fig, ax = plt.subplots(figsize=(10, 8))
-                        data["field_monitor"].plot(field="Ey", ax=ax)
-                        out_png = PATH.build / "tidy3d_field.png"
-                        fig.savefig(out_png, dpi=150, bbox_inches="tight")
-                        plt.close(fig)
-                        lines.append(f"Saved field plot: {out_png}")
+                    if hasattr(data, 'simulation_data'):
+                        for mon_name in ['field_monitor', 'field_z', 'field_xy']:
+                            if mon_name in [m.name for m in sim.monitors]:
+                                fig, ax = plt.subplots(figsize=(10, 8))
+                                data[mon_name].plot(field="Ey", ax=ax)
+                                out_png = PATH.build / f"tidy3d_field_{mon_name}.png"
+                                fig.savefig(out_png, dpi=150, bbox_inches="tight")
+                                plt.close(fig)
+                                lines.append(f"Saved field plot: {out_png}")
                 except Exception as fe:
-                    lines.append(f"Field plot failed: {fe}")
-                
-            except Exception as we:
-                lines.append(f"Cloud run failed: {we}")
-        else:
-            lines.append("No TIDY3D_API_KEY - skipping cloud run")
+                    lines.append(f"Field plot: {fe}")
+                    
+            except Exception as le:
+                lines.append(f"Local run failed: {le}")
+                lines.append("Falling back to cloud mode...")
+                use_local = False
+        
+        if not use_local:
+            # Cloud simulation (requires API key)
+            api_key = os.getenv("TIDY3D_API_KEY")
+            if api_key:
+                try:
+                    from tidy3d import web
+                    
+                    web.configure(apikey=api_key)
+                    lines.append("Configured Tidy3D API")
+                    
+                    task_name = f"PhIDO-{component_type}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+                    lines.append(f"Starting cloud run: {task_name}")
+                    
+                    # Run simulation with encoding fix for Windows
+                    import io
+                    old_stdout = sys.stdout
+                    old_stderr = sys.stderr
+                    try:
+                        if sys.platform == "win32":
+                            sys.stdout = io.StringIO()
+                            sys.stderr = io.StringIO()
+                        
+                        data = web.run(
+                            simulation=sim,
+                            task_name=task_name,
+                            path=str(PATH.build / "tidy3d_data.hdf5"),
+                        )
+                        result = "success"
+                    except UnicodeEncodeError as ue:
+                        lines.append(f"Note: Unicode output issue")
+                        result = "unicode_warning"
+                        data = None
+                    finally:
+                        if sys.platform == "win32":
+                            try:
+                                stdout_capture = sys.stdout.getvalue() if hasattr(sys.stdout, 'getvalue') else ""
+                                stderr_capture = sys.stderr.getvalue() if hasattr(sys.stderr, 'getvalue') else ""
+                            except:
+                                pass
+                            sys.stdout = old_stdout
+                            sys.stderr = old_stderr
+                    
+                    if result == "success":
+                        lines.append("Cloud simulation completed!")
+                    
+                except Exception as we:
+                    lines.append(f"Cloud run failed: {we}")
+            else:
+                lines.append("No TIDY3D_API_KEY - simulation skipped")
         
         # Save config
         config = {
@@ -1001,15 +1023,18 @@ def create_y_branch(
     structures.append(input_wg)
     
     # S-bend upper arm
-    # Create using multiple segments
-    for i in range(10):
-        t = i / 9.0
-        x = -arm_length + t * arm_length
+    # Create using multiple segments with overlap to ensure connectivity
+    num_segments = 15  # More segments for smoother curve
+    segment_length = arm_length / num_segments * 1.5  # Overlap factor > 1 ensures no gaps
+    
+    for i in range(num_segments):
+        t = i / (num_segments - 1)  # t from 0 to 1
+        x = -arm_length + t * arm_length * 2  # Cover full length
         y = t * arm_separation / 2
         segment = td.Structure(
             geometry=td.Box(
                 center=(x, y, wg_height / 2),
-                size=(arm_length / 10 + 0.1, wg_width, wg_height),
+                size=(segment_length, wg_width, wg_height),
             ),
             medium=si,
             name=f"upper_arm_{i}",
@@ -1017,24 +1042,24 @@ def create_y_branch(
         structures.append(segment)
     
     # S-bend lower arm
-    for i in range(10):
-        t = i / 9.0
-        x = -arm_length + t * arm_length
+    for i in range(num_segments):
+        t = i / (num_segments - 1)
+        x = -arm_length + t * arm_length * 2
         y = -t * arm_separation / 2
         segment = td.Structure(
             geometry=td.Box(
                 center=(x, y, wg_height / 2),
-                size=(arm_length / 10 + 0.1, wg_width, wg_height),
+                size=(segment_length, wg_width, wg_height),
             ),
             medium=si,
             name=f"lower_arm_{i}",
         )
         structures.append(segment)
     
-    # Output waveguides
+    # Output waveguides - connect properly to arm ends
     upper_out = td.Structure(
         geometry=td.Box(
-            center=(arm_length/2 + 5, arm_separation/2, wg_height / 2),
+            center=(arm_length + 5, arm_separation/2, wg_height / 2),
             size=(10, wg_width, wg_height),
         ),
         medium=si,
@@ -1044,7 +1069,7 @@ def create_y_branch(
     
     lower_out = td.Structure(
         geometry=td.Box(
-            center=(arm_length/2 + 5, -arm_separation/2, wg_height / 2),
+            center=(arm_length + 5, -arm_separation/2, wg_height / 2),
             size=(10, wg_width, wg_height),
         ),
         medium=si,
@@ -1053,18 +1078,18 @@ def create_y_branch(
     structures.append(lower_out)
     
     # Simulation domain size
-    Lx = arm_length * 2 + 20
-    Ly = arm_separation + 6
+    Lx = arm_length * 3 + 25
+    Ly = arm_separation + 8
     Lz = 4.0
     
-    # Source position
+    # Source position (inside input waveguide)
     src_center = (-arm_length - 9, 0, wg_height / 2)
     
     # Monitor positions
     monitor_positions = [
         (-arm_length - 9, 0, "port_o1"),            # Input
-        (arm_length/2 + 9, arm_separation/2, "port_o2"),   # Upper output
-        (arm_length/2 + 9, -arm_separation/2, "port_o3"),  # Lower output
+        (arm_length + 9, arm_separation/2, "port_o2"),   # Upper output
+        (arm_length + 9, -arm_separation/2, "port_o3"),  # Lower output
     ]
     
     return structures, (Lx, Ly, Lz), src_center, monitor_positions

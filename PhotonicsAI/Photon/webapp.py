@@ -2332,6 +2332,9 @@ elif not session.step_by_step_mode and session.p100 and (session.current_message
                     target_lower = target.lower()
                     # 关键词映射（按优先级）
                     keyword_map = {
+                        "y_branch": ["y_branch", "ybranch"],  # Y分支，优先级最高
+                        "y-branch": ["y_branch", "ybranch"],
+                        "y branch": ["y_branch", "ybranch"],
                         "grating": ["_gc", "grating"],
                         "mmi": ["mmi"],
                         "ring": ["ring", "mrr"],
@@ -2339,7 +2342,7 @@ elif not session.step_by_step_mode and session.p100 and (session.current_message
                         "coupler": ["coupler", "dc"],
                         "mzi": ["mzi"],
                         "crossing": ["crossing"],
-                        "splitter": ["mmi", "splitter"],
+                        "splitter": ["mmi", "splitter", "y_branch"],
                         "modulator": ["modulator", "mzm"],
                         "heater": ["heater"],
                         "phase": ["phase"],
@@ -2494,65 +2497,82 @@ elif not session.step_by_step_mode and session.p100 and (session.current_message
                     st.rerun()
 
             if hasattr(session, 'generated_template_path') and session.generated_template_path:
-                if st.button("🚀 Run FDTD / Simulation", type="primary"):
-                    st.info("🔄 Running Tidy3D simulation...")
+                if st.button("🚀 Run FDTD Simulation", type="primary"):
+                    st.info("🔄 Running Meep FDTD simulation...")
                     
                     try:
-                        from PhotonicsAI.Photon import tidy3d_runner
-                        import os
-                        
-                        # Enable actual cloud run
-                        os.environ["TIDY3D_RUN"] = "1"
-                        
-                        # Build session dict for tidy3d
-                        session_dict = {
-                            "p200_pretemplate": session.p200_pretemplate if hasattr(session, 'p200_pretemplate') else {},
-                            "p300_circuit_dsl": {
-                                "doc": {"title": session.p200_pretemplate.get("title", "Component") if hasattr(session, 'p200_pretemplate') else "Component"}
-                            }
-                        }
-                        
-                        # Run Tidy3D
-                        tidy3d_runner.try_log_tidy3d(session_dict)
-                        
-                        st.success("✅ Tidy3D simulation completed!")
-                        
-                        # Use unified component detector
+                        # Use Meep FDTD simulation (runs in WSL)
                         from component_detector import detect_component_type
                         
-                        component_type = "unknown"
-                        comp_list = session_dict.get("p200_pretemplate", {}).get("components_list", [])
+                        component_type = "waveguide"
+                        comp_list = session.p200_pretemplate.get("components_list", []) if hasattr(session, 'p200_pretemplate') else []
                         if comp_list:
                             component_type, confidence = detect_component_type(str(comp_list[0]))
                         
-                        # Show generated images for this component type
-                        sim_pngs = [
-                            PATH.build / f"tidy3d_sim_z0_{component_type}.png",
-                            PATH.build / f"tidy3d_sim_x0_{component_type}.png", 
-                            PATH.build / f"tidy3d_sim_y0_{component_type}.png",
-                        ]
-                        # Fallback to default names if component-specific files don't exist
-                        default_pngs = [
-                            PATH.build / "tidy3d_sim_z0.png",
-                            PATH.build / "tidy3d_sim_x0.png", 
-                            PATH.build / "tidy3d_sim_y0.png",
-                        ]
+                        # Run Meep via WSL
+                        import subprocess
+                        import json
                         
-                        # Use component-specific files if they exist, otherwise use defaults
-                        for i, png_path in enumerate(sim_pngs):
-                            if png_path.exists():
-                                st.image(str(png_path), caption=png_path.name)
-                            elif default_pngs[i].exists():
-                                st.image(str(default_pngs[i]), caption=default_pngs[i].name)
+                        # Prepare params
+                        params = {}
+                        if hasattr(session, 'generated_template_path'):
+                            try:
+                                import re
+                                template_content = Path(session.generated_template_path).read_text(encoding="utf-8")
+                                param_matches = re.findall(r'(\w+):\s*float\s*=\s*([\d.]+)', template_content)
+                                for name, value in param_matches:
+                                    params[name] = float(value)
+                            except:
+                                pass
+                        
+                        # Create temp script for WSL
+                        wsl_script = f'''
+source ~/miniconda3/bin/activate
+conda activate meep-env
+cd /mnt/c/Users/PC/Desktop/OPTI-AI
+python -c "
+import sys
+sys.path.insert(0, '.')
+from PhotonicsAI.Photon import meep_runner
+result = meep_runner.run_meep_simulation(
+    '{component_type}',
+    {json.dumps(params)},
+    'build'
+)
+print('RESULT:', result)
+"
+'''
+                        
+                        script_path = PATH.build / "run_meep.sh"
+                        script_path.write_text(wsl_script)
+                        
+                        # Run in WSL
+                        result = subprocess.run(
+                            ["wsl", "-d", "Ubuntu", "bash", str(script_path)],
+                            capture_output=True,
+                            text=True,
+                            timeout=120
+                        )
+                        
+                        st.success("✅ Meep FDTD simulation completed!")
+                        
+                        # Show generated images
+                        field_path = PATH.build / f"meep_sim_{component_type}_field.png"
+                        struct_path = PATH.build / f"meep_sim_{component_type}_structure.png"
+                        
+                        if field_path.exists():
+                            st.image(str(field_path), caption=f"{component_type.upper()} Field Distribution")
+                        if struct_path.exists():
+                            st.image(str(struct_path), caption=f"{component_type.upper()} Structure")
                         
                         # Show log
-                        tlog = PATH.build / "tidy3d.log"
-                        if tlog.exists():
-                            with st.expander("📄 Simulation Log"):
-                                st.code(tlog.read_text(encoding="utf-8"), language="text")
+                        with st.expander("📄 Simulation Log"):
+                            st.code(result.stdout + result.stderr, language="bash")
                                 
                     except Exception as sim_e:
                         st.error(f"Simulation error: {sim_e}")
+                        import traceback
+                        st.code(traceback.format_exc())
             else:
                 st.error("Template file not found.")
             

@@ -1,0 +1,4 @@
+zhipuai
+anthropic
+python-dotenv
+deepseek-tokenizer
