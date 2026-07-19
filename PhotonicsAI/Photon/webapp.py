@@ -46,8 +46,8 @@ from PhotonicsAI.Photon.drc.drc import run_drc
 # CONFIGURATION
 # =============================================================================
 
-# Available LLM models
-LLM_MODELS = {
+# Available LLM models (legacy fallback catalog)
+LEGACY_LLM_MODELS = {
     "阿里云百炼": [
         "glm-4.7",           # GLM-4.7 (推荐)
         "qwen-plus",         # Qwen Plus
@@ -79,6 +79,22 @@ LLM_MODELS = {
     ],
 }
 
+
+def _load_resourcepack_models() -> list[str]:
+    raw = os.getenv("RESOURCEPACK_MODELS", "").strip()
+    if not raw:
+        return []
+    return [m.strip() for m in raw.split(",") if m.strip()]
+
+
+RESOURCEPACK_MODELS = _load_resourcepack_models()
+DEFAULT_LLM_MODEL = os.getenv("RESOURCEPACK_DEFAULT_MODEL", "glm-4.7").strip() or "glm-4.7"
+
+if RESOURCEPACK_MODELS:
+    LLM_MODELS = {"资源包模型": RESOURCEPACK_MODELS}
+else:
+    LLM_MODELS = LEGACY_LLM_MODELS
+
 # LLM model configurations for different workflow steps
 # 从侧边栏选择的模型
 def get_selected_model():
@@ -93,14 +109,14 @@ def get_selected_model():
         selected = st.selectbox(
             "选择要使用的 AI 模型",
             all_models,
-            index=all_models.index("glm-4.7 (阿里云)") if "glm-4.7 (阿里云)" in all_models else 0,
+            index=all_models.index(f"{DEFAULT_LLM_MODEL} (资源包模型)") if f"{DEFAULT_LLM_MODEL} (资源包模型)" in all_models else 0,
             help="选择用于所有步骤的 LLM 模型。不同模型可能需要不同的 API Key，请确保已在 .env 中配置。"
         )
         # 从选择中提取实际的模型名（去掉分类标识）
         return selected.split(" (")[0]
 
 # 所有步骤默认使用相同的模型
-selected_model = "glm-4.7"  # 默认值，会被 get_selected_model() 更新
+selected_model = DEFAULT_LLM_MODEL  # 默认值，会被 get_selected_model() 更新
 entity_extraction_model = selected_model
 component_selection_model = selected_model
 component_specification_model = selected_model
@@ -1072,7 +1088,7 @@ session = st.session_state
 
 # 在session中存储并更新模型选择
 if 'selected_model' not in session:
-    session.selected_model = "glm-4.7"
+    session.selected_model = DEFAULT_LLM_MODEL
 if 'model_initialized' not in session:
     session.model_initialized = False
 
@@ -1088,7 +1104,7 @@ if not session.model_initialized:
         selected = st.selectbox(
             "选择要使用的 AI 模型",
             all_models,
-            index=all_models.index("glm-4.7 (阿里云)") if "glm-4.7 (阿里云)" in all_models else 0,
+            index=all_models.index(f"{DEFAULT_LLM_MODEL} ({list(LLM_MODELS.keys())[0].split()[0]})") if f"{DEFAULT_LLM_MODEL} ({list(LLM_MODELS.keys())[0].split()[0]})" in all_models else 0,
             help="选择用于所有步骤的 LLM 模型。不同模型可能需要不同的 API Key，请确保已在 .env 中配置。"
         )
         # 从选择中提取实际的模型名（去掉分类标识）
@@ -1156,7 +1172,7 @@ if "step_results" not in session:
 
 # LLM API configuration
 if "p100_llm_api_selection" not in session:
-    session.p100_llm_api_selection = "nvidia/nemotron-4-340b-instruct"
+    session.p100_llm_api_selection = DEFAULT_LLM_MODEL
 
 # Function to handle input submission and state changes
 def check_input_change():
@@ -2410,7 +2426,7 @@ elif not session.step_by_step_mode and session.p100 and (session.current_message
 
         # -------------------------------------------------------------
         # Phase A.1: Single Component Discovery & Generation
-        # 流程: 爬虫搜索论文 -> LLM 聚合多篇论文参数 -> 生成 ONE 高质量模板
+        # 流程: 用户上传 PDF / 粘贴论文文本 -> LLM 提取参数 -> 生成 ONE 高质量模板
         # -------------------------------------------------------------
         if hasattr(session, 'automatic_phase') and session.automatic_phase == "pdk_generation":
              # 调试信息
@@ -2435,46 +2451,72 @@ elif not session.step_by_step_mode and session.p100 and (session.current_message
                 target_component = getattr(session, 'pdk_target_component', 'unknown')
                 
              st.markdown(f"**🔬 Target Component:** `{target_component}`")
-                
-             with st.spinner(f"🔬 Searching literature & generating template for '{target_component}'..."):
+
+             st.markdown("**📄 Paper Input**")
+             uploaded_pdf = st.file_uploader(
+                 "Upload one paper PDF",
+                 type=["pdf"],
+                 key="pdk_generation_pdf_upload",
+                 help="Upload a single paper PDF for parameter extraction and component template generation.",
+             )
+
+             st.caption("当前阶段只接受单篇 PDF 论文输入。原论文爬虫流程与手工文本输入已停用。")
+             # 旧的“爬虫搜索论文”与“粘贴论文文本”路径已停用，当前 webapp 仅触发 PDF 输入模式。
+
+             if st.button("Generate Template From Paper", type="primary", key="generate_template_from_paper"):
                  try:
-                     import sys
-                     repo_root = str(PATH.repo)
-                     if repo_root not in sys.path:
-                         sys.path.append(repo_root)
-                     try:
-                         import scripts.auto_pdk_generator as auto_pdk_generator
-                     except ImportError:
-                         scripts_path = str(PATH.repo / "scripts")
-                         if scripts_path not in sys.path:
-                             sys.path.append(scripts_path)
-                         import auto_pdk_generator  # type: ignore[import-not-found]
-                     
-                     discovery_result = auto_pdk_generator.discover_and_generate(
-                         component_name=target_component,
-                         max_papers=8
-                     )
-                     
-                     # 显示发现结果
-                     st.markdown("**📊 Discovery Results:**")
-                     st.write(f"- Papers found: {discovery_result.get('papers_found', 0)}")
-                     st.write(f"- Device type: {discovery_result.get('device_type', 'N/A')}")
-                     if discovery_result.get('params'):
-                         st.write(f"- Parameters: {discovery_result.get('params')}")
-                     
-                     if discovery_result.get("filepath"):
-                         session.generated_template_path = discovery_result["filepath"]
-                         session.discovery_result = discovery_result
-                         session.automatic_phase = "pdk_optimization"
-                         st.success(f"✅ Generated template: {discovery_result['filepath']}")
-                         st.rerun()
+                     from PhotonicsAI.agents.pdk_agent import create_pdk_agent
+                     import tempfile
+
+                     provided_pdf_path = None
+                     if uploaded_pdf is not None:
+                         suffix = Path(uploaded_pdf.name).suffix or ".pdf"
+                         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
+                             tmp_file.write(uploaded_pdf.getbuffer())
+                             provided_pdf_path = tmp_file.name
+
+                     if not provided_pdf_path:
+                         st.error("Please upload a PDF before generating.")
                      else:
-                         error_msg = discovery_result.get("error", "Unknown error")
+                         agent = create_pdk_agent()
+                         generation_result = None
+                         with st.spinner(f"🔬 Processing paper & generating template for '{target_component}'..."):
+                             with st.expander("🤖 Agent Generation Stream", expanded=True):
+                                 for event in agent.run_generation(target_component, provided_pdf_path):
+                                     event_type = event.get("event")
+                                     if event_type == "thought":
+                                         st.write(f"Thought: {event.get('content', '')}")
+                                     elif event_type == "action":
+                                         st.write(f"Action: {event.get('tool', '')} -> {event.get('args', {})}")
+                                     elif event_type == "observation":
+                                         st.write(f"Observation ({event.get('tool', '')}):")
+                                         st.json(event.get("result", {}))
+                                     elif event_type == "answer":
+                                         generation_result = event.get("result")
+
+                         template_result = (generation_result or {}).get("template", {})
+                         template_data = template_result.get("data", {}) if isinstance(template_result, dict) else {}
+                         filepath = template_data.get("filepath", "")
+
+                         st.markdown("**📊 Discovery Results:**")
+                         st.write(f"- Device type: {(generation_result or {}).get('device_type', 'N/A')}")
+                         params_payload = ((generation_result or {}).get("params") or {}).get("data", {})
+                         if params_payload.get("params"):
+                             st.write(f"- Parameters: {params_payload.get('params')}")
+
+                         if filepath:
+                             session.generated_template_path = filepath
+                             session.discovery_result = generation_result
+                             session.automatic_phase = "pdk_optimization"
+                             st.success(f"✅ Generated template: {filepath}")
+                             st.rerun()
+
+                         error_msg = (generation_result or {}).get("error") or template_result.get("error") or "Unknown error"
                          st.error(f"❌ Failed to generate template: {error_msg}")
                          st.info("Falling back to component selection...")
                          session.automatic_phase = "component_selection"
                          st.rerun()
-                         
+
                  except Exception as e:
                      import traceback
                      st.error(f"❌ Discovery error: {e}")
@@ -2497,77 +2539,192 @@ elif not session.step_by_step_mode and session.p100 and (session.current_message
                     st.rerun()
 
             if hasattr(session, 'generated_template_path') and session.generated_template_path:
-                if st.button("🚀 Run FDTD Simulation", type="primary"):
-                    st.info("🔄 Running Meep FDTD simulation...")
+                max_inverse_iterations = st.slider(
+                    "Inverse Design Max Iterations",
+                    min_value=1,
+                    max_value=8,
+                    value=3,
+                    step=1,
+                    key="inverse_design_max_iterations",
+                )
+
+                fdtd_col, inverse_col = st.columns(2)
+                run_fdtd = fdtd_col.button("🚀 Run FDTD Simulation", type="primary")
+                run_inverse_design = inverse_col.button("🧠 Run Inverse Design (ReAct)")
+
+                if run_inverse_design:
+                    st.info("🔄 Running Step1-Step5 inverse-design ReAct chain...")
+
+                    try:
+                        from PhotonicsAI.agents.pdk_agent import create_pdk_agent
+
+                        requirement_text = str(getattr(session, "current_message", "") or "").strip()
+                        if not requirement_text and hasattr(session, "p200_pretemplate"):
+                            requirement_text = str(session.p200_pretemplate)
+
+                        if not requirement_text:
+                            st.error("No requirement text found for inverse design. Please re-enter your request.")
+                        else:
+                            agent = create_pdk_agent()
+                            inverse_result = None
+
+                            with st.expander("🤖 Inverse-Design ReAct Stream", expanded=True):
+                                for event in agent.run_inverse_design_react(
+                                    requirement_text=requirement_text,
+                                    max_iterations=int(max_inverse_iterations),
+                                ):
+                                    event_type = event.get("event")
+                                    if event_type == "thought":
+                                        st.write(f"💭 {event.get('content', '')}")
+                                    elif event_type == "action":
+                                        st.write(f"⚡ {event.get('tool', '')} → {event.get('args', {})}")
+                                    elif event_type == "observation":
+                                        st.write(f"📊 Observation ({event.get('tool', '')}):")
+                                        st.json(event.get("result", {}))
+                                    elif event_type == "answer":
+                                        inverse_result = event.get("result")
+
+                            session.inverse_design_result = inverse_result
+
+                            if inverse_result and inverse_result.get("ok"):
+                                st.success("✅ Inverse design completed!")
+                            else:
+                                st.warning("⚠️ Inverse design finished with issues. Check stream logs and diagnostics.")
+
+                            run_result = {}
+                            if isinstance(inverse_result, dict):
+                                run_result = (
+                                    inverse_result.get("run_result")
+                                    or inverse_result.get("data", {}).get("run_result")
+                                    or {}
+                                )
+
+                            if run_result:
+                                st.markdown("#### 📌 Inverse-Design Summary")
+                                col_r1, col_r2, col_r3 = st.columns(3)
+                                col_r1.metric("Status", str(run_result.get("status", "unknown")))
+                                col_r2.metric(
+                                    "Best Score",
+                                    f"{float(run_result.get('best_score', 0.0)):.4f}",
+                                )
+                                col_r3.metric(
+                                    "Best Iteration",
+                                    str(run_result.get("best_iteration", "-")),
+                                )
+
+                                iterations = run_result.get("iterations", [])
+                                objective_trace = [
+                                    item.get("objective_value")
+                                    for item in iterations
+                                    if isinstance(item, dict) and item.get("objective_value") is not None
+                                ]
+                                if len(objective_trace) > 1:
+                                    st.markdown("#### 📈 Objective Trend")
+                                    st.line_chart(objective_trace)
+
+                                failure_diagnosis = run_result.get("failure_diagnosis")
+                                if failure_diagnosis:
+                                    with st.expander("🩺 Failure Diagnosis", expanded=False):
+                                        st.json(failure_diagnosis)
+
+                                artifact_paths = []
+                                for item in iterations:
+                                    if not isinstance(item, dict):
+                                        continue
+                                    artifact_paths.extend(item.get("artifacts", []))
+
+                                shown_paths = set()
+                                for artifact in artifact_paths:
+                                    try:
+                                        artifact_path = Path(str(artifact))
+                                    except Exception:
+                                        continue
+                                    if not artifact_path.exists():
+                                        continue
+                                    if artifact_path.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp"}:
+                                        continue
+                                    normalized = str(artifact_path)
+                                    if normalized in shown_paths:
+                                        continue
+                                    shown_paths.add(normalized)
+                                    st.image(normalized, caption=artifact_path.name)
+
+                    except Exception as inverse_e:
+                        st.error(f"Inverse-design error: {inverse_e}")
+                        import traceback
+                        st.code(traceback.format_exc())
+
+                if run_fdtd:
+                    st.info("🔄 Running Agent-driven Tidy3D simulation...")
                     
                     try:
-                        # Use Meep FDTD simulation (runs in WSL)
-                        from component_detector import detect_component_type
-                        
+                        from PhotonicsAI.agents.pdk_agent import create_pdk_agent
+                        from PhotonicsAI.Photon.component_detector import detect_component_type
+
                         component_type = "waveguide"
                         comp_list = session.p200_pretemplate.get("components_list", []) if hasattr(session, 'p200_pretemplate') else []
                         if comp_list:
-                            component_type, confidence = detect_component_type(str(comp_list[0]))
-                        
-                        # Run Meep via WSL
-                        import subprocess
-                        import json
-                        
-                        # Prepare params
-                        params = {}
-                        if hasattr(session, 'generated_template_path'):
-                            try:
-                                import re
-                                template_content = Path(session.generated_template_path).read_text(encoding="utf-8")
-                                param_matches = re.findall(r'(\w+):\s*float\s*=\s*([\d.]+)', template_content)
-                                for name, value in param_matches:
-                                    params[name] = float(value)
-                            except:
-                                pass
-                        
-                        # Create temp script for WSL
-                        wsl_script = f'''
-source ~/miniconda3/bin/activate
-conda activate meep-env
-cd /mnt/c/Users/PC/Desktop/OPTI-AI
-python -c "
-import sys
-sys.path.insert(0, '.')
-from PhotonicsAI.Photon import meep_runner
-result = meep_runner.run_meep_simulation(
-    '{component_type}',
-    {json.dumps(params)},
-    'build'
-)
-print('RESULT:', result)
-"
-'''
-                        
-                        script_path = PATH.build / "run_meep.sh"
-                        script_path.write_text(wsl_script)
-                        
-                        # Run in WSL
-                        result = subprocess.run(
-                            ["wsl", "-d", "Ubuntu", "bash", str(script_path)],
-                            capture_output=True,
-                            text=True,
-                            timeout=120
-                        )
-                        
-                        st.success("✅ Meep FDTD simulation completed!")
-                        
-                        # Show generated images
-                        field_path = PATH.build / f"meep_sim_{component_type}_field.png"
-                        struct_path = PATH.build / f"meep_sim_{component_type}_structure.png"
-                        
-                        if field_path.exists():
-                            st.image(str(field_path), caption=f"{component_type.upper()} Field Distribution")
-                        if struct_path.exists():
-                            st.image(str(struct_path), caption=f"{component_type.upper()} Structure")
-                        
-                        # Show log
-                        with st.expander("📄 Simulation Log"):
-                            st.code(result.stdout + result.stderr, language="bash")
+                            component_type, _ = detect_component_type(str(comp_list[0]))
+
+                        agent = create_pdk_agent()
+                        final_result = None
+                        scores: list[float] = []
+                        current_expander = None
+                        with st.container():
+                            for event in agent.run_optimization(
+                                component_type=component_type,
+                                template_path=session.generated_template_path,
+                                wavelength_nm=1550.0,
+                            ):
+                                event_type = event.get("event")
+                                iteration = event.get("iteration")
+
+                                # Create a new expander when a new iteration starts.
+                                if (
+                                    event_type == "thought"
+                                    and "Starting optimisation iteration" in event.get("content", "")
+                                ):
+                                    label = event.get("content", f"Iteration {iteration}")
+                                    current_expander = st.expander(f"🔄 {label}", expanded=True)
+
+                                ctx = current_expander if current_expander is not None else st
+
+                                if event_type == "thought":
+                                    ctx.write(f"💭 {event.get('content', '')}")
+                                elif event_type == "action":
+                                    ctx.write(f"⚡ {event.get('tool', '')} → {event.get('args', {})}")
+                                elif event_type == "observation":
+                                    ctx.write(f"📊 Observation ({event.get('tool', '')}):")
+                                    ctx.json(event.get("result", {}))
+                                    score = event.get("result", {}).get("data", {}).get("score")
+                                    if score is not None:
+                                        scores.append(float(score))
+                                elif event_type == "reflection":
+                                    ctx.info(event.get("content", ""))
+                                elif event_type == "answer":
+                                    final_result = event.get("result")
+
+                            # Score trend chart.
+                            if len(scores) > 1:
+                                st.markdown("#### 📈 Score Trend")
+                                st.line_chart(scores)
+
+                        if final_result and final_result.get("ok"):
+                            st.success("✅ Optimisation completed!")
+                            res_data = final_result.get("data", {})
+                            col_m1, col_m2 = st.columns(2)
+                            col_m1.metric("Best Score", f"{res_data.get('best_score', 0):.4f}")
+                            col_m2.metric("Iterations", res_data.get("iterations_used", "?"))
+                        else:
+                            st.warning("⚠️ Simulation finished with warnings or partial outputs.")
+
+                        for image_path in sorted(PATH.build.glob(f"tidy3d_*_{component_type}.png")):
+                            st.image(str(image_path), caption=image_path.name)
+
+                        tidy_log = PATH.build / "tidy3d.log"
+                        if tidy_log.exists():
+                            with st.expander("📄 Tidy3D Log"):
+                                st.code(tidy_log.read_text(encoding="utf-8"), language="text")
                                 
                     except Exception as sim_e:
                         st.error(f"Simulation error: {sim_e}")

@@ -4,7 +4,9 @@ import os
 import re
 import random
 import urllib.parse
+from pathlib import Path
 from bs4 import BeautifulSoup
+from pypdf import PdfReader
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
@@ -78,7 +80,6 @@ DEVICE_keywords = {
 }
 
 MAX_RESULTS_PER_KEYWORD = 10  # 增加检索数量
-
 # ==================== 组件代码模板 ====================
 
 TEMPLATES = {
@@ -363,8 +364,9 @@ def {func_name}(
     return c
 '''
 }
-
+'''
 # ==================== 爬虫辅助函数 ====================
+
 
 def init_driver():
     options = webdriver.ChromeOptions()
@@ -372,7 +374,7 @@ def init_driver():
     options.add_argument('--disable-blink-features=AutomationControlled')
     options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
     return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-
+'''
 def extract_params_with_llm(text, device_type):
     """(可选) 使用 Zhipu AI (ChatGLM) 提取精准参数
     需要设置环境变量 ZHIPUAI_API_KEY 或直接在代码中填入
@@ -527,24 +529,20 @@ def extract_params_heuristic(text, device_type):
 
     return p
 
-# ==================== 代码生成 ====================
-
+# ==================== 旧搜索链路遗留函数（当前 PDF-only 工作流停用） ====================
+'''
 def generate_component_file(paper_info):
     """根据爬取的论文信息生成 .py 文件 (旧接口, 每篇论文一个文件)"""
     device_type = paper_info['device_type']
     if device_type not in TEMPLATES:
         return None
-        
-    # 提取参数
+
     params = extract_params_heuristic(paper_info['full_text'], device_type)
-    
-    # 生成唯一函数名 (去除非法字符)
     safe_title = re.sub(r'[^a-zA-Z0-9]', '', paper_info['title'])[:20]
     func_name = f"auto_{device_type}_{safe_title}_{random.randint(100,999)}"
     filename = f"{func_name}.py"
     filepath = os.path.join(OUTPUT_DIR, filename)
 
-    # 填充模板
     try:
         code = TEMPLATES[device_type].format(
             func_name=func_name,
@@ -552,14 +550,10 @@ def generate_component_file(paper_info):
             link=paper_info['link'],
             **params
         )
-        
-        # 确保目录存在
         if not os.path.exists(OUTPUT_DIR):
             os.makedirs(OUTPUT_DIR)
-            
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write(code)
-            
         print(f"[SUCCESS] Generated: {filename}")
         return filepath
     except Exception as e:
@@ -567,20 +561,8 @@ def generate_component_file(paper_info):
         return None
 
 
-# ==================== 核心新接口: 多论文聚合 -> 单模板生成 ====================
 def _generate_search_keywords_with_llm(component_name, device_type=None):
-    """使用 LLM 动态生成学术搜索关键词。
-    
-    不再完全依赖硬编码的 DEVICE_keywords 字典，而是让 LLM 根据组件名
-    智能生成更精准、更多样的搜索词（涵盖不同术语、缩写、变体）。
-    
-    Args:
-        component_name: 用户描述的组件名 (e.g., "high-Q ring resonator")
-        device_type: 已识别的设备类型 (可选, e.g., "ring_resonator")
-    
-    Returns:
-        list[str]: 搜索关键词列表 (5-8个)
-    """
+    """旧多源搜索链路的 LLM 关键词生成器；当前停用。"""
     try:
         from zhipuai import ZhipuAI
         api_key = os.getenv("ZHIPUAI_API_KEY") or os.getenv("ZHIPU_API_KEY")
@@ -588,46 +570,20 @@ def _generate_search_keywords_with_llm(component_name, device_type=None):
             return None
 
         client = ZhipuAI(api_key=api_key)
-
-        prompt = f"""You are an expert in silicon photonics and integrated photonics research.
-
-A user wants to design the following photonic component:
-  Component: "{component_name}"
-  {f'Internal type: "{device_type}"' if device_type else ''}
-
-Generate 5-8 high-quality academic search keywords/phrases for finding relevant papers on 
-arXiv, Google Scholar, and IEEE/Optica journals.
-
-Requirements:
-1. Include the EXACT component name and common synonyms/abbreviations
-2. Include platform-specific terms (e.g., "silicon photonics", "SOI", "silicon nitride")
-3. Include design-oriented terms (e.g., "design", "optimization", "fabrication")
-4. Include performance-oriented terms (e.g., "low loss", "broadband", "high efficiency")
-5. Vary the specificity: some broad ("MMI coupler design"), some narrow ("1x2 MMI 220nm SOI insertion loss")
-6. Include terms that would appear in methodology/results sections of relevant papers
-
-Return a JSON array of strings ONLY. No markdown, no explanation.
-Example: ["1x2 MMI silicon photonics", "multimode interferometer coupler SOI", ...]
-"""
-
+        prompt = f"component={component_name}, type={device_type}"
         response = client.chat.completions.create(
-            model="glm-4-flash",  # 使用免费的 flash 模型
+            model="glm-4-flash",
             messages=[{"role": "user", "content": prompt}],
         )
         content = response.choices[0].message.content
         content = content.replace("```json", "").replace("```", "").strip()
         keywords = json.loads(content)
-        
         if isinstance(keywords, list) and len(keywords) > 0:
-            print(f"  [LLM-Keywords] Generated {len(keywords)} search keywords for '{component_name}'")
-            for i, kw in enumerate(keywords):
-                print(f"    {i+1}. {kw}")
-            return keywords[:8]  # 最多 8 个
+            return keywords[:8]
         return None
-        
-    except Exception as e:
-        print(f"  [LLM-Keywords] Failed: {e}")
+    except Exception:
         return None
+'''
 
 
 def _resolve_device_type(component_name):
@@ -813,7 +769,8 @@ Do NOT include markdown formatting. Output pure JSON only.
         return None, ""
 
 
-# ==================== 论文质量评判与排序 ====================
+# ==================== 论文质量评判与排序（旧链路，当前停用） ====================
+'''
 def _rank_papers_with_llm(papers, device_type, top_n=8):
     """使用 LLM 对论文进行质量评分和排序。
     
@@ -953,18 +910,17 @@ Sort by score descending. Output pure JSON only, no markdown.
     except Exception as e:
         print(f"  [Paper Ranking] LLM ranking failed: {e}, using original order.")
         return papers[:top_n]
+'''
 
 
-def resolve_device_type_and_keywords(component_name):
-    """解析组件类型并生成搜索关键词（含降级策略）。
+def resolve_device_type(component_name):
+    """解析组件类型。
 
     Returns:
         dict: {
             "ok": bool,
             "data": {
                 "device_type": str,
-                "keywords": list[str],
-                "fallback_reason": str,
             },
             "error": str | None,
         }
@@ -977,131 +933,140 @@ def resolve_device_type_and_keywords(component_name):
             "error": f"Cannot map '{component_name}' to a known device type. Supported: {list(TEMPLATES.keys())}",
         }
 
-    keywords = _generate_search_keywords_with_llm(component_name, device_type)
-    fallback_reason = "llm_generated"
-
-    if not keywords:
-        keywords = DEVICE_keywords.get(device_type)
-        fallback_reason = "hardcoded"
-        if keywords:
-            print(f"  [Keywords] Falling back to hardcoded keywords ({len(keywords)} keywords)")
-
-    if not keywords:
-        keywords = [f"{component_name} silicon photonics", f"{component_name} design optimization"]
-        fallback_reason = "component_name"
-        print("  [Keywords] Using component name as search keyword")
-
     return {
         "ok": True,
         "data": {
             "device_type": device_type,
-            "keywords": keywords,
-            "fallback_reason": fallback_reason,
         },
         "error": None,
     }
 
 
-def retrieve_papers_multi_source(device_type, keywords, max_papers=8):
-    """多源检索论文，返回原始结果与来源统计。"""
-    driver = None
-    all_papers = []
-    source_stats = {
-        "arxiv": 0,
-        "google_scholar": 0,
-        "optica": 0,
-        "total_raw": 0,
-    }
-    error_msg = None
+'''
+def resolve_device_type_and_keywords(component_name):
+    """兼容旧接口，保留给现有调用方。"""
+    return resolve_device_type(component_name)
+'''
 
+
+def _build_pdf_paper_entry(device_type, paper_text, pdf_path):
+    """将 PDF 提取结果包装为单篇标准 paper 对象。"""
+    source_name = "user_pdf"
+    title = Path(pdf_path).stem
+    link = str(pdf_path)
+    normalized_text = (paper_text or "").strip()
+
+    return {
+        "title": title,
+        "abstract": normalized_text[:2000],
+        "full_text": normalized_text,
+        "source": source_name,
+        "link": link,
+        "device_type": device_type,
+        "has_full_text": bool(normalized_text),
+        "quality_score": 100,
+        "quality_reason": "User provided paper content",
+    }
+
+
+def _read_pdf_text_with_pypdf(pdf_path):
+    """使用 pypdf 读取用户提供 PDF 的文本。"""
     try:
-        driver = init_driver()
+        pdf_file = Path(pdf_path)
+        if not pdf_file.exists():
+            return None, f"PDF file does not exist: '{pdf_path}'"
 
-        print("  [Source: ArXiv]")
-        for kw in keywords[:4]:
-            papers = search_arxiv(driver, kw, device_type)
-            all_papers.extend(papers)
-            source_stats["arxiv"] += len(papers)
-            print(f"    Found {len(papers)} papers for '{kw}'")
-            if len(all_papers) >= max_papers:
-                break
+        reader = PdfReader(str(pdf_file))
+        text_chunks = []
+        for page in reader.pages:
+            page_text = page.extract_text() or ""
+            if page_text.strip():
+                text_chunks.append(page_text)
 
-        if len(all_papers) < max_papers:
-            print("  [Source: Google Scholar]")
-            for kw in keywords[:3]:
-                papers = search_google_scholar(driver, kw, device_type)
-                all_papers.extend(papers)
-                source_stats["google_scholar"] += len(papers)
-                print(f"    Found {len(papers)} papers for '{kw}'")
-                if len(all_papers) >= max_papers * 2:
-                    break
+        full_text = "\n".join(text_chunks).strip()
+        if not full_text:
+            return None, f"No extractable text found in PDF: '{pdf_path}'"
 
-        if len(all_papers) < max_papers:
-            print("  [Source: Optica/OSA]")
-            for kw in keywords[:2]:
-                papers = search_optica(driver, kw, device_type)
-                all_papers.extend(papers)
-                source_stats["optica"] += len(papers)
-                print(f"    Found {len(papers)} papers for '{kw}'")
-                if len(all_papers) >= max_papers * 2:
-                    break
-
+        return full_text, None
     except Exception as e:
-        error_msg = f"Crawler error: {e}"
-    finally:
-        if driver:
-            try:
-                driver.quit()
-            except Exception:
-                pass
+        return None, f"Failed to read PDF '{pdf_path}': {e}"
 
-    source_stats["total_raw"] = len(all_papers)
+
+def retrieve_papers_multi_source(device_type, provided_pdf_path=None):
+    """获取论文输入；当前只支持用户提供单篇 PDF。"""
+    if provided_pdf_path:
+        pdf_text, pdf_error = _read_pdf_text_with_pypdf(provided_pdf_path)
+        if pdf_text:
+            paper = _build_pdf_paper_entry(device_type, pdf_text, pdf_path=provided_pdf_path)
+            return {
+                "ok": True,
+                "data": {
+                    "papers": [paper],
+                    "source_stats": {
+                        "arxiv": 0,
+                        "google_scholar": 0,
+                        "optica": 0,
+                        "manual": 1,
+                        "total_raw": 1,
+                    },
+                },
+                "error": None,
+            }
+        return {
+            "ok": False,
+            "data": {
+                "papers": [],
+                "source_stats": {
+                    "arxiv": 0,
+                    "google_scholar": 0,
+                    "optica": 0,
+                    "manual": 0,
+                    "total_raw": 0,
+                },
+            },
+            "error": pdf_error,
+        }
     return {
-        "ok": True,
+        "ok": False,
         "data": {
-            "papers": all_papers,
-            "source_stats": source_stats,
-        },
-        "error": error_msg,
-    }
-
-
-def rank_and_dedup_papers(papers, device_type, top_n=8):
-    """按标题去重并进行质量排序，输出 Top-N。"""
-    seen_titles = set()
-    unique_papers = []
-
-    for p in papers:
-        title = p.get("title", "").strip()
-        if title and title not in seen_titles:
-            seen_titles.add(title)
-            unique_papers.append(p)
-
-    print(f"[Discovery] {len(unique_papers)} unique papers found across all sources.")
-
-    llm_used = False
-    if len(unique_papers) > top_n:
-        print(f"[Discovery] Ranking {len(unique_papers)} papers to select top {top_n}...")
-        ranked_papers = _rank_papers_with_llm(unique_papers, device_type, top_n=top_n)
-        llm_used = True
-    else:
-        ranked_papers = unique_papers
-
-    return {
-        "ok": True,
-        "data": {
-            "ranked_papers": ranked_papers,
-            "ranking_meta": {
-                "total_input": len(papers),
-                "total_unique": len(unique_papers),
-                "total_output": len(ranked_papers),
-                "llm_used": llm_used,
+            "papers": [],
+            "source_stats": {
+                "arxiv": 0,
+                "google_scholar": 0,
+                "optica": 0,
+                "manual": 0,
+                "total_raw": 0,
             },
         },
-        "error": None,
+        "error": "PDF input is required for the current workflow.",
     }
 
+'''
+def rank_and_dedup_papers(papers, device_type, top_n=8):
+    """暂时停用：当前 PDF-only 单篇论文流程不使用排序去重。"""
+    # 已按当前工作流要求停用这一步。
+    # 原设计用途：
+    # 1. 按标题去重
+    # 2. 对多篇论文进行质量排序
+    # 3. 返回 top_n 论文用于后续聚合
+    #
+    # 当前只有单篇 PDF 输入，因此这一步没有实际意义，先明确注释停用。
+    # 若后续恢复多论文输入，再恢复原排序与去重逻辑。
+    return {
+        "ok": False,
+        "data": {
+            "ranked_papers": papers,
+            "ranking_meta": {
+                "total_input": len(papers),
+                "total_unique": len(papers),
+                "total_output": len(papers),
+                "llm_used": False,
+            },
+        },
+        "error": "rank_and_dedup_papers is disabled for the current PDF-only workflow.",
+    }
 
+'''
 def extract_or_aggregate_params(papers, device_type):
     """统一参数策略节点：多篇聚合 / 单篇提取 / 默认降级。"""
     params = {}
@@ -1194,28 +1159,28 @@ def generate_template_file(device_type, params, papers, confidence_note=""):
         }
 
 
-def discover_and_generate(component_name, max_papers=8):
-    """核心新接口：根据组件名，执行完整的 Discovery 流程。
-    
-    流程：
-    1. 将自然语言组件名映射到 device_type
-    2. 使用爬虫搜索相关论文（ArXiv）
-    3. 收集多篇论文摘要
-    4. 用 LLM 综合所有论文，提取共识参数
-    5. 生成 ONE 高质量基础模板文件
-    
+def discover_and_generate(component_name, max_papers=8, provided_pdf_path=None):
+    """根据组件名和用户提供的单篇 PDF 执行当前主链生成流程。
+
+    当前有效流程：
+    1. 将自然语言组件名映射到内部 `device_type`
+    2. 读取用户上传的单篇 PDF，并归一化为标准 `paper` 对象
+    3. 执行参数提取策略（单篇提取 / 多篇聚合 / 默认降级）
+    4. 生成 ONE 高质量基础模板文件
+
     Args:
         component_name: 用户自然语言描述的组件名 (e.g., "1x2 MMI", "Ge photodetector")
-        max_papers: 最多使用多少篇论文进行参数聚合 (default: 8)
-    
+        max_papers: 兼容旧接口保留；当前 PDF-only 主链固定处理单篇论文。
+        provided_pdf_path: 用户上传 PDF 的本地临时路径。
+
     Returns:
         dict: {
-            "filepath": str or None,     # 生成文件的路径
-            "device_type": str,           # 内部设备类型
-            "papers_found": int,          # 找到的论文数
-            "params": dict,              # 提取到的参数
-            "confidence_note": str,       # LLM 的置信度说明
-            "error": str or None          # 错误信息
+            "filepath": str or None,
+            "device_type": str,
+            "papers_found": int,
+            "params": dict,
+            "confidence_note": str,
+            "error": str or None,
         }
     """
     result = {
@@ -1228,27 +1193,32 @@ def discover_and_generate(component_name, max_papers=8):
         "error": None,
     }
 
-    # Step 1: 解析设备类型 + 关键词
-    print(f"[Discovery] Generating search keywords for '{component_name}'...")
-    resolved = resolve_device_type_and_keywords(component_name)
+    # Step 1: 解析设备类型
+    print(f"[Discovery] Resolving device type for '{component_name}'...")
+    resolved = resolve_device_type(component_name)
     if not resolved["ok"]:
         result["error"] = resolved["error"]
         return result
 
     device_type = resolved["data"]["device_type"]
-    keywords = resolved["data"]["keywords"]
     result["device_type"] = device_type
 
-    # Step 2: 多源检索论文
-    print(f"[Discovery] Searching papers for '{component_name}' (type={device_type})...")
-    retrieved = retrieve_papers_multi_source(device_type, keywords, max_papers=max_papers)
+    # Step 2: 获取 PDF 论文输入并包装为标准 paper 对象
+    print(f"[Discovery] Using provided PDF for '{component_name}' (type={device_type})...")
+
+    retrieved = retrieve_papers_multi_source(
+        device_type,
+        provided_pdf_path=provided_pdf_path,
+    )
     raw_papers = retrieved["data"]["papers"]
+    if not retrieved["ok"]:
+        result["error"] = retrieved["error"]
+        return result
     if retrieved["error"]:
         result["error"] = retrieved["error"]
 
-    # Step 3: 去重与排序
-    ranked = rank_and_dedup_papers(raw_papers, device_type, top_n=max_papers)
-    all_papers = ranked["data"]["ranked_papers"]
+    # 旧的排序去重步骤已从当前主链移除，当前直接使用单篇 PDF 论文输入。
+    all_papers = raw_papers
 
     result["papers_found"] = len(all_papers)
     # 保存评分信息用于前端展示
@@ -1262,14 +1232,14 @@ def discover_and_generate(component_name, max_papers=8):
         }
         for p in all_papers
     ]
-    print(f"[Discovery] Using {len(all_papers)} top-ranked papers for parameter aggregation.")
+    print(f"[Discovery] Using {len(all_papers)} paper(s) for parameter extraction.")
 
-    # Step 4: 参数提取与聚合
+    # Step 3: 参数提取与聚合
     params_result = extract_or_aggregate_params(all_papers, device_type)
     result["params"] = params_result["data"]["params"]
     result["confidence_note"] = params_result["data"]["confidence_note"]
 
-    # Step 5: 生成模板文件
+    # Step 4: 生成模板文件
     render_result = generate_template_file(
         device_type=device_type,
         params=result["params"],
@@ -1284,6 +1254,7 @@ def discover_and_generate(component_name, max_papers=8):
 
     return result
 
+'''
 # ==================== 全文抓取 ====================
 
 def fetch_full_paper_text(driver, arxiv_link, max_chars=15000):
@@ -1356,7 +1327,6 @@ def fetch_full_paper_text(driver, arxiv_link, max_chars=15000):
     except Exception as e:
         print(f"    [FullText] Failed for {arxiv_link}: {e}")
         return ""
-
 
 # ==================== 爬虫逻辑 (ArXiv) ====================
 def search_arxiv(driver, keyword, device_type, fetch_full=True):
@@ -1611,7 +1581,6 @@ def search_optica(driver, keyword, device_type, fetch_full=True):
     
     return results
 
-
 # ==================== 主流程 ====================
 
 def main():
@@ -1654,3 +1623,55 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+'''
+# ==================== 记忆模块 ====================
+from typing import List, Dict, Any, Optional
+
+class Memory:
+    """
+    一个简单的短期记忆模块，用于存储智能体的行动与反思轨迹。
+    """
+
+    def __init__(self):
+        """
+        初始化一个空列表来存储所有记录。
+        """
+        self.records: List[Dict[str, Any]] = []
+
+    def add_record(self, record_type: str, content: str):
+        """
+        向记忆中添加一条新记录。
+
+        参数:
+        - record_type (str): 记录的类型 ('execution' 或 'reflection')。
+        - content (str): 记录的具体内容 (例如，生成的代码或反思的反馈)。
+        """
+        record = {"type": record_type, "content": content}
+        self.records.append(record)
+        print(f"📝 记忆已更新，新增一条 '{record_type}' 记录。")
+
+    def get_trajectory(self) -> str:
+        """
+        将所有记忆记录格式化为一个连贯的字符串文本，用于构建提示词。
+        """
+        trajectory_parts = []
+        for record in self.records:
+            if record['type'] == 'execution':
+                trajectory_parts.append(f"--- 上一轮尝试 (代码) ---\n{record['content']}")
+            elif record['type'] == 'reflection':
+                trajectory_parts.append(f"--- 评审员反馈 ---\n{record['content']}")
+        
+        return "\n\n".join(trajectory_parts)
+
+    def get_last_execution(self) -> Optional[str]:
+        """
+        获取最近一次的执行结果 (例如，最新生成的代码)。
+        如果不存在，则返回 None。
+        """
+        for record in reversed(self.records):
+            if record['type'] == 'execution':
+                return record['content']
+        return None
+
+# ==================== 反思模块 ====================

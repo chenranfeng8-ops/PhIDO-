@@ -19,13 +19,18 @@ COMPONENT_RULES = [
     ("ring_resonator", ["ring resonator", "micro-ring", "microring", "mrr", "ring filter"], [], 2),
     ("grating_coupler", ["grating coupler", "fiber coupler", "gc ", "vertical coupler"], [], 2),
     ("mzi", ["mzi", "mach-zehnder", "mach zehnder", "interferometer"], [], 2),
-    ("mmi", ["mmi", "multi-mode interferometer", "multimode"], [], 2),
+    ("mmi", [
+        "mmi", "multi-mode interferometer", "multimode",
+        # WDM / demux common aliases (English + Chinese)
+        "wdm", "demux", "mux", "wavelength division multiplexer", "wavelength division demultiplexer",
+        "波分复用", "波分解复用", "波分复用器", "波分解复用器", "解复用", "复用器",
+    ], [], 2),
     ("directional_coupler", ["directional coupler", "dc ", "coupler", "evanescent coupler"], ["grating", "y-branch"], 2),
     
     # Priority 3: General types
     ("crossing", ["crossing", "waveguide crossing", "wg crossing"], [], 3),
     ("waveguide", ["waveguide", "wg ", "straight waveguide", "wire"], [], 3),
-    ("splitter", ["splitter", "power splitter"], [], 3),
+    ("splitter", ["splitter", "power splitter", "分束器", "功分器"], [], 3),
     ("modulator", ["modulator", "mzm", "phase shifter", "heater"], [], 3),
     ("bragg", ["bragg", "bragg grating", "dbr"], [], 3),
     

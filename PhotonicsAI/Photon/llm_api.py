@@ -18,8 +18,21 @@ from openai import OpenAI
 
 # Local imports
 from PhotonicsAI.config import CONF, PATH
+from PhotonicsAI.Photon.model_capabilities import (
+    get_resourcepack_model_policy,
+    should_use_responses_api,
+)
 
 load_dotenv()
+
+
+class LLMServiceUnavailableError(RuntimeError):
+    """Raised when all LLM API backends fail.
+
+    KL-4: Replaces silent demo-mode fallback so callers are forced to
+    handle API unavailability explicitly rather than receiving hardcoded
+    demo data that could silently corrupt downstream results.
+    """
 
 # Session-specific token tracking for Google Gemini models
 def get_session_token_usage():
@@ -1414,6 +1427,137 @@ def call_deepseek(prompt, sys_prompt="", model="deepseek-reasoner", n_completion
         return [splice(r.message.content) for r in response.choices]
         
 def call_llm(prompt, sys_prompt,llm_api_selection="nvidia/nemotron-4-340b-instruct"):
+    """Call LLM with resource-pack-first routing.
+
+    Route priority is controlled by env var `LLM_ROUTE_MODE`:
+    - resourcepack_first (default): always use resourcepack, fail fast on errors.
+    - hybrid_fallback: try resourcepack first, then legacy routing.
+    - legacy_only: skip resourcepack and use legacy routing.
+    """
+    route_mode = os.getenv("LLM_ROUTE_MODE", "resourcepack_first").strip().lower()
+    resourcepack_enabled = os.getenv("RESOURCEPACK_ENABLED", "0") == "1"
+
+    # Resource-pack-first route (single base_url + single API key + model switch)
+    if route_mode != "legacy_only" and resourcepack_enabled:
+        try:
+            return call_resourcepack_openai_compatible(prompt, sys_prompt, llm_api_selection)
+        except Exception as e:
+            if route_mode == "resourcepack_first":
+                return f"ResourcePack mode error: {e}"
+            print(f"ResourcePack failed, falling back to legacy route: {e}")
+
+    # Legacy route (existing multi-provider routing)
+    return _call_llm_legacy(prompt, sys_prompt, llm_api_selection)
+
+
+def call_resourcepack_openai_compatible(prompt, sys_prompt, model):
+    """Call unified OpenAI-compatible endpoint from RESOURCEPACK_* env vars."""
+    api_key = os.getenv("RESOURCEPACK_API_KEY", "").strip()
+    base_url = os.getenv("RESOURCEPACK_BASE_URL", "").strip()
+    policy = get_resourcepack_model_policy(model)
+    raw_models = os.getenv("RESOURCEPACK_MODELS", "").strip()
+    if raw_models:
+        allow_models = [m.strip() for m in raw_models.split(",") if m.strip()]
+        if allow_models and model not in allow_models:
+            raise Exception(f"模型不在 RESOURCEPACK_MODELS 白名单中: {model}")
+    if not api_key or api_key == "__FILL_ME__":
+        raise Exception("RESOURCEPACK_API_KEY 未配置")
+    if not base_url or base_url == "__FILL_ME__":
+        raise Exception("RESOURCEPACK_BASE_URL 未配置")
+
+    client = OpenAI(api_key=api_key, base_url=base_url)
+    if policy["endpoint"] == "responses":
+        try:
+            response = client.responses.create(
+                model=model,
+                input=[
+                    {
+                        "role": "system",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": sys_prompt,
+                            }
+                        ],
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": prompt,
+                            }
+                        ],
+                    },
+                ],
+                max_output_tokens=policy["max_output_tokens"],
+            )
+            return _extract_responses_text(response)
+        except Exception as e:
+            raise _resourcepack_endpoint_error(model, "responses", e)
+
+    try:
+        request = dict(
+            model=model,
+            messages=[
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        if policy["allow_sampling_params"]:
+            request["temperature"] = 0.1
+            request["top_p"] = 0.7
+
+        response = client.chat.completions.create(**request)
+        return response.choices[0].message.content
+    except Exception as e:
+        raise _resourcepack_endpoint_error(model, "chat.completions", e)
+
+
+def _extract_responses_text(response):
+    """Extract plain text from OpenAI Responses API payload across SDK variations."""
+    text = getattr(response, "output_text", None)
+    if text:
+        return text
+
+    output = getattr(response, "output", None) or []
+    chunks = []
+    for item in output:
+        for content in getattr(item, "content", []) or []:
+            c_text = getattr(content, "text", None)
+            if c_text:
+                chunks.append(c_text)
+
+    if chunks:
+        return "\n".join(chunks)
+    raise Exception("Responses API 返回中未解析到文本内容")
+
+
+def _resourcepack_endpoint_error(model, endpoint, err):
+    """Normalize endpoint/model compatibility errors for clearer user-facing diagnostics."""
+    msg = str(err)
+    lower = msg.lower()
+
+    if "403" in lower or "forbidden" in lower or "已禁止" in msg:
+        return Exception(
+            f"{model} 在 {endpoint} 上被网关拒绝（403）。请检查资源包账号是否开通该模型权限或路由策略。原始错误: {msg}"
+        )
+
+    if endpoint == "chat.completions" and should_use_responses_api(model):
+        if "400" in lower or "bad request" in lower or "错误的请求" in msg:
+            return Exception(
+                f"{model} 在 chat.completions 上返回 400。该模型应改用 /openai/v1/responses，并使用 input 格式请求体。原始错误: {msg}"
+            )
+
+    if endpoint == "responses" and ("400" in lower or "bad request" in lower or "错误的请求" in msg):
+        return Exception(
+            f"{model} 在 responses 上返回 400。请检查 input 请求体格式与模型权限。原始错误: {msg}"
+        )
+
+    return Exception(f"{model} 在 {endpoint} 调用失败: {msg}")
+
+
+def _call_llm_legacy(prompt, sys_prompt, llm_api_selection="nvidia/nemotron-4-340b-instruct"):
     """Call the LLM API.
 
     Args:
@@ -1422,14 +1566,28 @@ def call_llm(prompt, sys_prompt,llm_api_selection="nvidia/nemotron-4-340b-instru
         llm_api_selection: The API to use for the completion.
     """
     try:
-        # Route to Zhipu (智谱) if the selection indicates a GLM/ChatGLM/Zhipu model
-        # Accept common prefixes: glm-, glm, chatglm, chatglm_turbo, zhipu
         llm_sel_lower = llm_api_selection.lower()
+        if llm_sel_lower.startswith("gpt-"):
+            api_key = (CONF.openai_api_key or os.getenv("OPENAI_API_KEY"))
+            if not api_key:
+                raise Exception("未找到 OpenAI API Key。请在 .env 中设置 OPENAI_API_KEY，或在 PhotonicsAI/config.py 的 openai_api_key 配置。")
+            client = OpenAI(api_key=api_key)
+            response = client.chat.completions.create(
+                model=llm_api_selection,
+                messages=[
+                    {"role": "system", "content": sys_prompt},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.1,
+            )
+            return response.choices[0].message.content
+        if llm_sel_lower.startswith("claude"):
+            return call_anthropic(prompt, sys_prompt, model=llm_api_selection)
         # GLM-5 使用阿里云百炼 API
         if llm_api_selection == "glm-5":
             return call_aliyun(prompt, sys_prompt, llm_api_selection)
         # GLM-4 及其他智谱模型使用智谱 AI API
-        if llm_sel_lower.startswith("gpt-") or llm_sel_lower.startswith("glm-4") or llm_sel_lower.startswith("chatglm") or llm_sel_lower.startswith("zhipu") or llm_sel_lower == "glm-4":
+        if llm_sel_lower.startswith("glm-4") or llm_sel_lower.startswith("chatglm") or llm_sel_lower.startswith("zhipu") or llm_sel_lower == "glm-4":
             return call_zhipu(prompt, sys_prompt, llm_api_selection)
         if llm_api_selection[:4] == "nvid":
             print("NVIDIA")
@@ -1452,15 +1610,14 @@ def call_llm(prompt, sys_prompt,llm_api_selection="nvidia/nemotron-4-340b-instru
             return call_google(prompt, sys_prompt, model="gemini-2.5-pro-preview-03-25")
         elif llm_api_selection == "gemini-2.5-pro":
             return call_google(prompt, sys_prompt, model="gemini-2.5-pro")
-        elif llm_api_selection[:6] == "claude":
-            return call_anthropic(prompt, sys_prompt, model=llm_api_selection)
         else:
             # Default fallback - try Zhipu
             return call_zhipu(prompt, sys_prompt, "glm-4")
     except Exception as e:
-        # Demo mode fallback when all APIs fail
-        print(f"API unavailable for call_llm, using demo mode. Error: {e}")
-        return "Demo mode: API service is currently unavailable. Please configure a valid API key to use full features."
+        raise LLMServiceUnavailableError(
+            f"All LLM API backends failed for call_llm. "
+            f"Please configure a valid API key. Original error: {e}"
+        ) from e
 
 def llm_retrieve(query, contexts, llm_api_selection):
     """Retrieve the best matched photonic components based on the query.
@@ -1767,13 +1924,10 @@ category 3: Not relevant to integrated photonics.
         r = callgpt_pydantic(input_prompt, sys_prompt, PromptClass)
         return r
     except Exception as e:
-        # Demo/Fallback mode when API is unavailable
-        print(f"API unavailable, using demo mode. Error: {e}")
-        # Default to category 1 (photonic design) for any input
-        return PromptClass(
-            category_id=1,
-            response="API服务暂时不可用，使用演示模式。您的输入将被处理为光子电路设计请求。"
-        )
+        raise LLMServiceUnavailableError(
+            f"All LLM API backends failed for entity_classification. "
+            f"Please configure a valid API key. Original error: {e}"
+        ) from e
 
 
 class InputClarity(BaseModel):
@@ -1811,9 +1965,10 @@ Otherwise, set input_clarity to False and provide a brief explanation of the amb
         r = callgpt_pydantic(input_prompt, sys_prompt, InputClarity)
         return r.model_dump()
     except Exception as e:
-        # Demo mode fallback
-        print(f"API unavailable for verify_input_clarity, using demo mode. Error: {e}")
-        return {"input_clarity": True, "explain_ambiguity": "Demo mode: API unavailable"}
+        raise LLMServiceUnavailableError(
+            f"All LLM API backends failed for verify_input_clarity. "
+            f"Please configure a valid API key. Original error: {e}"
+        ) from e
 
 
 class InputEntities(BaseModel):
@@ -1873,15 +2028,10 @@ def entity_extraction(input_prompt):
         r = callgpt_pydantic(input_prompt, sys_prompt, InputEntities)
         return r.model_dump()
     except Exception as e:
-        # Demo mode fallback
-        print(f"API unavailable for entity_extraction, using demo mode. Error: {e}")
-        return {
-            "design_type": "single_component",
-            "title": "Demo Component",
-            "components_list": ["mzi"],
-            "circuit_instructions": "Demo mode: API unavailable",
-            "brief_summary": "Demo mode - please configure a valid API key"
-        }
+        raise LLMServiceUnavailableError(
+            f"All LLM API backends failed for entity_extraction. "
+            f"Please configure a valid API key. Original error: {e}"
+        ) from e
 
 
 class PaperEntities1(BaseModel):
